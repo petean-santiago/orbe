@@ -2,7 +2,7 @@
  * Demo repository used when Orbe runs in a plain browser (no Tauri backend).
  * It is stateful, so staging and committing behave believably while designing.
  */
-import type { Branch, Commit, FileChange } from "./api";
+import type { Branch, Commit, FileChange, TreeEntry } from "./api";
 
 const AUTHORS = [
   ["Ada Moreno", "ada@aurora.dev"],
@@ -108,16 +108,65 @@ let status: FileChange[] = [
   { path: "README.md", oldPath: null, status: "modified", staged: false },
 ];
 
-const branches: Branch[] = [
-  { name: "main", kind: "local", isHead: true, upstream: "origin/main", ahead: 1, behind: 0 },
-  { name: "feature/theme", kind: "local", isHead: false, upstream: "origin/feature/theme", ahead: 0, behind: 2 },
-  { name: "fix/graph-perf", kind: "local", isHead: false, upstream: null, ahead: 0, behind: 0 },
-  { name: "origin/main", kind: "remote", isHead: false, upstream: null, ahead: 0, behind: 0 },
-  { name: "origin/feature/theme", kind: "remote", isHead: false, upstream: null, ahead: 0, behind: 0 },
-  { name: "origin/feature/auth", kind: "remote", isHead: false, upstream: null, ahead: 0, behind: 0 },
-  { name: "v0.2.0", kind: "tag", isHead: false, upstream: null, ahead: 0, behind: 0 },
-  { name: "v0.1.0", kind: "tag", isHead: false, upstream: null, ahead: 0, behind: 0 },
+const now = Math.floor(Date.now() / 1000);
+const H = 3600;
+const br = (name: string, kind: Branch["kind"], extra: Partial<Branch> = {}): Branch => ({
+  name,
+  kind,
+  isHead: false,
+  upstream: null,
+  ahead: 0,
+  behind: 0,
+  updated: now - 30 * H,
+  ...extra,
+});
+let branches: Branch[] = [
+  br("main", "local", { isHead: true, upstream: "origin/main", ahead: 1, updated: now - 2 * H }),
+  br("feature/theme", "local", { upstream: "origin/feature/theme", behind: 2, updated: now - 5 * H }),
+  br("feature/command-palette", "local", { updated: now - 50 * H }),
+  br("fix/graph-perf", "local", { updated: now - 26 * H }),
+  br("fix/windows-titlebar", "local", { updated: now - 120 * H }),
+  br("release/0.2", "local", { updated: now - 300 * H }),
+  br("origin/main", "remote", { updated: now - 3 * H }),
+  br("origin/feature/theme", "remote", { updated: now - 6 * H }),
+  br("origin/feature/auth", "remote", { updated: now - 90 * H }),
+  br("origin/docs/getting-started", "remote", { updated: now - 200 * H }),
+  br("v0.2.0", "tag", { updated: now - 80 * H }),
+  br("v0.1.0", "tag", { updated: now - 700 * H }),
 ];
+
+let tree: TreeEntry[] = [
+  ".github", ".github/workflows", "docs", "public", "src", "src/assets", "src/lib", "src/lib/components", "src-tauri", "src-tauri/src",
+].map((path) => ({ path, dir: true }));
+tree.push(
+  ...[
+    ".gitignore", "README.md", "package.json", "tsconfig.json", "vite.config.ts", ".github/workflows/build.yml",
+    "docs/architecture.md", "docs/old-architecture.md", "public/favicon.svg", "src/app.css", "src/App.svelte", "src/main.ts",
+    "src/assets/orbe-mark.svg", "src/lib/api.ts", "src/lib/graph.ts", "src/lib/format.ts", "src/lib/state.svelte.ts",
+    "src/lib/components/CommitGraph.svelte", "src/lib/components/Sidebar.svelte", "src/lib/components/Toolbar.svelte",
+    "src/lib/components/DiffView.svelte", "src/lib/components/Toasts.svelte", "src-tauri/Cargo.toml",
+    "src-tauri/tauri.conf.json", "src-tauri/src/main.rs", "src-tauri/src/lib.rs", "src-tauri/src/git.rs",
+  ].map((path) => ({ path, dir: false })),
+);
+
+const FENCE = "`".repeat(3);
+
+function sampleFile(path: string): string {
+  if (path.endsWith(".md"))
+    return `# ${path.split("/").pop()?.replace(".md", "")}\n\nOrbe is a calm, beautiful Git client.\n\n## Getting started\n\n${FENCE}bash\npnpm install\npnpm tauri dev\n${FENCE}\n`;
+  if (path.endsWith(".json")) return `{\n  "name": "aurora",\n  "version": "0.2.0",\n  "private": true\n}\n`;
+  if (path.endsWith(".rs"))
+    return `use tauri::Manager;\n\n/// Entry point for the desktop app.\npub fn run() {\n    tauri::Builder::default()\n        .run(tauri::generate_context!())\n        .expect("error while running");\n}\n`;
+  return Array.from({ length: 48 }, (_, i) =>
+    i === 0 ? `// ${path}` : i % 7 === 0 ? "" : `${"  ".repeat(i % 3)}export const value${i} = compute(${i}, "${path.split("/").pop()}");`,
+  ).join("\n");
+}
+
+const AI_REPLIES = {
+  commit:
+    "Refine theme tokens and graph rendering\n\n- Move the accent palette to OKLCH tokens so every surface derives from one hue\n- Reuse free lanes in the commit graph to keep it compact\n- Add the new toast component",
+  default: `Here's a summary of your work in progress:\n\n**Theme**: \`app.css\` switches the accent colours to OKLCH, so every accent now derives from a single hue.\n\n**Graph**: \`graph.ts\` reuses free lanes, which keeps wide histories compact.\n\n**New files**: \`Toasts.svelte\` is new and not yet staged.\n\nSuggested next step: commit the theme change separately from the graph change.\n\n${FENCE}bash\ngit add src/lib/components/Toasts.svelte\n${FENCE}`,
+};
 
 function diffFor(file: string, kind: string): string {
   if (kind === "untracked" || kind === "added") {
@@ -278,9 +327,97 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
       branches[0].ahead++;
       return h.slice(0, 7) as T;
     }
-    case "checkout_branch":
-      branches.forEach((b) => (b.isHead = b.kind === "local" && b.name === a.name));
+    case "checkout_branch": {
+      await wait(250);
+      let name = a.name as string;
+      if (a.remote) {
+        name = name.split("/").slice(1).join("/");
+        if (!branches.some((b) => b.kind === "local" && b.name === name))
+          branches.push(br(name, "local", { upstream: a.name, updated: now }));
+      }
+      branches.forEach((b) => (b.isHead = b.kind === "local" && b.name === name));
       return undefined as T;
+    }
+    case "create_branch":
+      if (branches.some((b) => b.kind === "local" && b.name === a.name))
+        throw new Error(`A branch named '${a.name}' already exists.`);
+      branches.push(br(a.name, "local", { updated: Math.floor(Date.now() / 1000) }));
+      if (a.checkout) branches.forEach((b) => (b.isHead = b.kind === "local" && b.name === a.name));
+      return undefined as T;
+    case "rename_branch":
+      branches = branches.map((b) => (b.kind === "local" && b.name === a.old ? { ...b, name: a.new } : b));
+      return undefined as T;
+    case "delete_branch":
+    case "delete_remote_branch":
+      branches = branches.filter((b) => b.name !== a.name || b.kind === "tag");
+      return undefined as T;
+    case "create_tag":
+      branches.push(br(a.name, "tag", { updated: Math.floor(Date.now() / 1000) }));
+      return undefined as T;
+    case "delete_tag":
+      branches = branches.filter((b) => !(b.kind === "tag" && b.name === a.name));
+      return undefined as T;
+    case "merge_branch":
+    case "stash_save":
+    case "stash_pop":
+    case "init_repo":
+      return undefined as T;
+    case "clone_repo":
+      await wait(900);
+      return a.dest as T;
+    case "get_staged_diff":
+    case "get_working_diff":
+      return status.map((s) => diffFor(s.path, s.status)).join("\n") as T;
+    case "get_commit_patch":
+      return commitFiles(a.hash).map((f) => diffFor(f.path, f.status)).join("\n") as T;
+    case "list_tree":
+      return structuredClone(tree) as T;
+    case "read_file": {
+      const text = sampleFile(a.file);
+      return { text, binary: false, size: text.length, truncated: false } as T;
+    }
+    case "create_file":
+    case "create_folder": {
+      const p = (a.file ?? a.folder) as string;
+      if (tree.some((t) => t.path === p)) throw new Error(`${p} already exists.`);
+      const parts = p.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const dir = parts.slice(0, i).join("/");
+        if (!tree.some((t) => t.path === dir)) tree.push({ path: dir, dir: true });
+      }
+      tree.push({ path: p, dir: cmd === "create_folder" });
+      if (cmd === "create_file") status.push({ path: p, oldPath: null, status: "untracked", staged: false });
+      return undefined as T;
+    }
+    case "rename_path":
+      tree = tree.map((t) =>
+        t.path === a.from || t.path.startsWith(a.from + "/") ? { ...t, path: a.to + t.path.slice(a.from.length) } : t,
+      );
+      return undefined as T;
+    case "delete_path":
+      tree = tree.filter((t) => t.path !== a.target && !t.path.startsWith(a.target + "/"));
+      return undefined as T;
+    case "chats_load":
+      return localStorage.getItem(`orbe.demoChats.${a.repo}`) as T;
+    case "chats_save":
+      localStorage.setItem(`orbe.demoChats.${a.repo}`, a.data);
+      return undefined as T;
+    case "ai_set_key":
+      localStorage.setItem(`orbe.demoKey.${a.provider}`, "1");
+      return undefined as T;
+    case "ai_has_key":
+      return (localStorage.getItem(`orbe.demoKey.${a.provider}`) === "1") as T;
+    case "ai_clear_key":
+      localStorage.removeItem(`orbe.demoKey.${a.provider}`);
+      return undefined as T;
+    case "ai_list_models":
+      return (a.config.provider === "anthropic" ? ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] : []) as T;
+    case "ai_cli_version":
+      return (a.provider === "claude-code" ? "2.1.0 (Claude Code)" : null) as T;
+    case "ai_complete": {
+      await wait(1100);
+      return (String(a.system).startsWith("You write Git commit messages") ? AI_REPLIES.commit : AI_REPLIES.default) as T;
+    }
     case "fetch":
     case "pull":
     case "push":

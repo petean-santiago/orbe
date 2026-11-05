@@ -49,6 +49,33 @@ export interface Branch {
   upstream: string | null;
   ahead: number;
   behind: number;
+  /** Unix seconds of the tip commit (or tag creation). */
+  updated: number;
+}
+
+export interface TreeEntry {
+  path: string;
+  dir: boolean;
+}
+
+export interface FileContent {
+  text: string | null;
+  binary: boolean;
+  size: number;
+  truncated: boolean;
+}
+
+export type AiProvider = "none" | "anthropic" | "openai" | "compatible" | "claude-code" | "codex";
+
+export interface AiConfig {
+  provider: AiProvider;
+  model: string;
+  baseUrl: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -79,6 +106,49 @@ export const git = {
   fetch: (path: string) => call<void>("fetch", { path }),
   pull: (path: string) => call<void>("pull", { path }),
   push: (path: string) => call<void>("push", { path }),
+
+  createBranch: (path: string, name: string, start: string | null, checkout: boolean) =>
+    call<void>("create_branch", { path, name, start, checkout }),
+  renameBranch: (path: string, old: string, name: string) => call<void>("rename_branch", { path, old, new: name }),
+  deleteBranch: (path: string, name: string, force: boolean) => call<void>("delete_branch", { path, name, force }),
+  deleteRemoteBranch: (path: string, name: string) => call<void>("delete_remote_branch", { path, name }),
+  merge: (path: string, name: string) => call<void>("merge_branch", { path, name }),
+  createTag: (path: string, name: string, target: string | null, message: string | null) =>
+    call<void>("create_tag", { path, name, target, message }),
+  deleteTag: (path: string, name: string) => call<void>("delete_tag", { path, name }),
+  stash: (path: string, message: string, includeUntracked: boolean) =>
+    call<void>("stash_save", { path, message, includeUntracked }),
+  stashPop: (path: string) => call<void>("stash_pop", { path }),
+
+  initRepo: (path: string) => call<void>("init_repo", { path }),
+  cloneRepo: (url: string, dest: string) => call<string>("clone_repo", { url, dest }),
+
+  stagedDiff: (path: string) => call<string>("get_staged_diff", { path }),
+  workingDiff: (path: string) => call<string>("get_working_diff", { path }),
+  commitPatch: (path: string, hash: string) => call<string>("get_commit_patch", { path, hash }),
+
+  tree: (path: string) => call<TreeEntry[]>("list_tree", { path }),
+  readFile: (path: string, file: string) => call<FileContent>("read_file", { path, file }),
+  createFile: (path: string, file: string) => call<void>("create_file", { path, file }),
+  createFolder: (path: string, folder: string) => call<void>("create_folder", { path, folder }),
+  renamePath: (path: string, from: string, to: string) => call<void>("rename_path", { path, from, to }),
+  deletePath: (path: string, target: string) => call<void>("delete_path", { path, target }),
+};
+
+/** On-disk storage for AI conversations, one file per repository. */
+export const chatStore = {
+  load: (repo: string) => call<string | null>("chats_load", { repo }),
+  save: (repo: string, data: string) => call<void>("chats_save", { repo, data }),
+};
+
+export const ai = {
+  setKey: (provider: AiProvider, key: string) => call<void>("ai_set_key", { provider, key }),
+  hasKey: (provider: AiProvider) => call<boolean>("ai_has_key", { provider }),
+  clearKey: (provider: AiProvider) => call<void>("ai_clear_key", { provider }),
+  complete: (config: AiConfig, system: string, messages: ChatMessage[], effort: "low" | "medium" | "high", cwd: string | null) =>
+    call<string>("ai_complete", { config, system, messages, effort, cwd }),
+  listModels: (config: AiConfig) => call<string[]>("ai_list_models", { config }),
+  cliVersion: (provider: AiProvider) => call<string | null>("ai_cli_version", { provider }),
 };
 
 /** Ask the user to pick a folder. Returns null when cancelled. */
@@ -86,6 +156,14 @@ export async function pickFolder(): Promise<string | null> {
   if (!isTauri) return "/Users/demo/projects/aurora";
   const { open } = await import("@tauri-apps/plugin-dialog");
   const selected = await open({ directory: true, multiple: false, title: "Open a Git repository" });
+  return typeof selected === "string" ? selected : null;
+}
+
+/** Pick a parent folder for cloning or creating a repository. */
+export async function pickDirectory(title: string): Promise<string | null> {
+  if (!isTauri) return "/Users/demo/projects";
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ directory: true, multiple: false, title });
   return typeof selected === "string" ? selected : null;
 }
 

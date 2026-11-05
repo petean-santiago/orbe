@@ -5,20 +5,20 @@
   import CommitList from "./CommitList.svelte";
   import Splitter from "./Splitter.svelte";
 
-  let splitBottom = $state(0.5);
-  let splitRight = $state(0.58);
 
-  const side = $derived(settings.value.detailsPosition === "right");
+  let width = $state(1200);
+  // "Beside" needs room for both panes; fall back to below on narrow windows.
+  const side = $derived(settings.value.detailsPosition === "right" && width >= 1000);
 </script>
 
-<div class={["flex h-full min-h-0", side ? "flex-row" : "flex-col"]}>
-  <div class="min-h-0 min-w-0" style:flex="0 0 {(side ? splitRight : splitBottom) * 100}%">
+<div class={["flex h-full min-h-0", side ? "flex-row" : "flex-col"]} bind:clientWidth={width}>
+  <div class="min-h-0 min-w-0" style:flex="0 0 {(side ? settings.value.sizes.historySplitSide : settings.value.sizes.historySplit) * 100}%">
     <CommitList />
   </div>
   {#if side}
-    <Splitter bind:value={splitRight} direction="horizontal" min={0.35} max={0.78} />
+    <Splitter bind:value={settings.value.sizes.historySplitSide} direction="horizontal" min={0.35} max={0.78} />
   {:else}
-    <Splitter bind:value={splitBottom} min={0.2} max={0.8} />
+    <Splitter bind:value={settings.value.sizes.historySplit} min={0.2} max={0.8} />
   {/if}
   <div class="min-h-0 min-w-0 flex-1 bg-black/20">
     {#if app.selectedCommit}

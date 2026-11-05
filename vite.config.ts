@@ -19,6 +19,8 @@ export default defineConfig({
   build: {
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari15",
     minify: !process.env.TAURI_ENV_DEBUG,
+    // Syntax grammars are lazy-loaded chunks; a few (e.g. C++) are large on their own.
+    chunkSizeWarningLimit: 1500,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
 });

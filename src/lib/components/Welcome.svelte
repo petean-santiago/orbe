@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Folder, FolderOpen, X } from "@lucide/svelte";
+  import { Download, Folder, FolderOpen, FolderPlus, LoaderCircle, X } from "@lucide/svelte";
+  import { cloneRepository, createRepository } from "../actions";
   import { app } from "../state.svelte";
   import { modKey } from "../format";
   import { isTauri } from "../api";
@@ -37,6 +38,13 @@
       <button class="btn-primary h-9 px-4 text-[13px]" onclick={() => app.openFolder()} disabled={app.loading}>
         <FolderOpen size={15} />
         {app.loading ? "Opening…" : "Open repository"}
+      </button>
+      <button class="btn h-9 px-4 text-[13px]" onclick={cloneRepository} disabled={!!app.cloning}>
+        {#if app.cloning}<LoaderCircle size={15} class="animate-spin text-accent" />{:else}<Download size={15} />{/if}
+        {app.cloning ? "Cloning…" : "Clone"}
+      </button>
+      <button class="btn h-9 px-4 text-[13px]" onclick={createRepository}>
+        <FolderPlus size={15} /> New
       </button>
     </div>
     <p class="mt-3 text-[12px] text-fg-faint">

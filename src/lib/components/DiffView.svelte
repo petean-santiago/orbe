@@ -1,7 +1,9 @@
 <script lang="ts">
   import { FileDiff } from "@lucide/svelte";
+  import { isBold, isItalic, tokenize, type ThemedToken } from "../highlight";
 
-  let { diff, loading = false }: { diff: string | null; loading?: boolean } = $props();
+  /** `path` picks the syntax-highlighting language. */
+  let { diff, path = null, loading = false }: { diff: string | null; path?: string | null; loading?: boolean } = $props();
 
   type Kind = "add" | "del" | "ctx" | "hunk";
   interface Line {
@@ -9,6 +11,8 @@
     text: string;
     oldNo?: number;
     newNo?: number;
+    /** Index into the highlighted code lines (not set for hunk headers). */
+    code?: number;
   }
 
   const parsed = $derived.by(() => {
@@ -20,6 +24,7 @@
     let newNo = 0;
     let adds = 0;
     let dels = 0;
+    let code = 0;
 
     for (const raw of diff.split("\n")) {
       if (raw.startsWith("@@")) {
@@ -36,16 +41,29 @@
       }
       if (raw.startsWith("\\")) continue; // "\ No newline at end of file"
       if (raw.startsWith("+")) {
-        lines.push({ kind: "add", text: raw.slice(1), newNo: newNo++ });
+        lines.push({ kind: "add", text: raw.slice(1), newNo: newNo++, code: code++ });
         adds++;
       } else if (raw.startsWith("-")) {
-        lines.push({ kind: "del", text: raw.slice(1), oldNo: oldNo++ });
+        lines.push({ kind: "del", text: raw.slice(1), oldNo: oldNo++, code: code++ });
         dels++;
       } else if (raw.startsWith(" ")) {
-        lines.push({ kind: "ctx", text: raw.slice(1), oldNo: oldNo++, newNo: newNo++ });
+        lines.push({ kind: "ctx", text: raw.slice(1), oldNo: oldNo++, newNo: newNo++, code: code++ });
       }
     }
     return { lines, binary, adds, dels };
+  });
+
+  // Highlight all diff lines in one pass so multi-line constructs mostly keep their colours.
+  let tokens = $state.raw<ThemedToken[][] | null>(null);
+  $effect(() => {
+    const p = parsed;
+    const file = path;
+    tokens = null;
+    if (!p || !file || p.binary) return;
+    let cancelled = false;
+    const text = p.lines.filter((l) => l.kind !== "hunk").map((l) => l.text).join("\n");
+    tokenize(text, file).then((t) => !cancelled && (tokens = t));
+    return () => (cancelled = true);
   });
 </script>
 
@@ -89,7 +107,11 @@
             <tr class="row-{line.kind}">
               <td class="num">{line.oldNo ?? ""}</td>
               <td class="num">{line.newNo ?? ""}</td>
-              <td class="code"><span class="sign">{line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}</span>{line.text}</td>
+              <td class="code"><span class="sign">{line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}</span>{#if tokens && line.code !== undefined && tokens[line.code]}{#each tokens[line.code] as t}<span
+                    style:color={t.color}
+                    class:italic={isItalic(t)}
+                    class:font-semibold={isBold(t)}>{t.content}</span
+                  >{/each}{:else}{line.text}{/if}</td>
             </tr>
           {/if}
         {/each}

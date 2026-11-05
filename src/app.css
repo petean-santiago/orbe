@@ -7,6 +7,14 @@
 @import "@fontsource-variable/sora";
 /* Display */
 @import "@fontsource-variable/unbounded";
+@import "@fontsource-variable/syne";
+@import "@fontsource-variable/gabarito";
+@import "@fontsource-variable/outfit";
+@import "@fontsource-variable/plus-jakarta-sans";
+@import "@fontsource-variable/red-hat-display";
+@import "@fontsource-variable/lexend";
+@import "@fontsource-variable/archivo/standard.css";
+@import "@fontsource-variable/familjen-grotesk";
 /* Code */
 @import "@fontsource/commit-mono/400.css";
 @import "@fontsource/commit-mono/600.css";
@@ -20,7 +28,7 @@
    --------------------------------------------------------------------------- */
 @theme {
   --font-sans: "Bricolage Grotesque Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Unbounded Variable", ui-sans-serif, sans-serif;
+  --font-display: "Red Hat Display Variable", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Commit Mono", ui-monospace, "SF Mono", Consolas, monospace;
 
   /* Solid base behind everything (also used where an opaque fill is needed) */
@@ -216,4 +224,38 @@
 }
 [data-glass="solid"] .glass-strong {
   background: oklch(0.155 0.02 var(--accent-h));
+}
+
+
+/* ---------------------------------------------------------------------------
+   Title font. Chosen in Settings → Typography; each font carries its own
+   weight, tracking and variable-axis settings.
+   Unlayered on purpose so it wins over Tailwind's font-weight utilities.
+   --------------------------------------------------------------------------- */
+.font-display {
+  font-weight: var(--display-weight, 600);
+  font-variation-settings: var(--display-variation, normal);
+  letter-spacing: var(--display-tracking, -0.02em);
+}
+
+/* ---------------------------------------------------------------------------
+   Syntax highlighting palette (see src/lib/highlight.ts). Keywords follow the
+   accent hue; everything else is tuned for contrast on the dark glass.
+   --------------------------------------------------------------------------- */
+:root {
+  --code-fg: oklch(0.9 0.015 300);
+  --code-comment: oklch(0.6 0.03 300);
+  --code-keyword: oklch(0.76 0.17 var(--accent-h));
+  --code-string: oklch(0.82 0.12 150);
+  --code-number: oklch(0.83 0.13 65);
+  --code-function: oklch(0.8 0.12 245);
+  --code-type: oklch(0.84 0.1 190);
+  --code-parameter: oklch(0.84 0.09 40);
+  --code-property: oklch(0.83 0.07 270);
+  --code-tag: oklch(0.76 0.15 15);
+  --code-attribute: oklch(0.85 0.1 90);
+  --code-regex: oklch(0.8 0.14 20);
+  --code-punctuation: oklch(0.68 0.03 300);
+  --code-heading: oklch(0.85 0.13 var(--accent-h));
+  --code-link: oklch(0.8 0.12 230);
 }

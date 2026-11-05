@@ -1,4 +1,6 @@
+mod ai;
 mod git;
+mod store;
 
 use tauri::Manager;
 
@@ -34,6 +36,34 @@ pub fn run() {
             git::fetch,
             git::pull,
             git::push,
+            git::create_branch,
+            git::rename_branch,
+            git::delete_branch,
+            git::delete_remote_branch,
+            git::merge_branch,
+            git::create_tag,
+            git::delete_tag,
+            git::stash_save,
+            git::stash_pop,
+            git::init_repo,
+            git::clone_repo,
+            git::get_staged_diff,
+            git::get_working_diff,
+            git::get_commit_patch,
+            git::list_tree,
+            git::read_file,
+            git::create_file,
+            git::create_folder,
+            git::rename_path,
+            git::delete_path,
+            ai::ai_set_key,
+            ai::ai_has_key,
+            ai::ai_clear_key,
+            ai::ai_complete,
+            ai::ai_list_models,
+            ai::ai_cli_version,
+            store::chats_load,
+            store::chats_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Orbe");

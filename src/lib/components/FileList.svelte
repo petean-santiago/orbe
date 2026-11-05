@@ -3,6 +3,7 @@
   import type { FileChange } from "../api";
   import { splitPath } from "../format";
   import StatusBadge from "./StatusBadge.svelte";
+  import FileIcon from "./FileIcon.svelte";
 
   let {
     files,
@@ -42,6 +43,7 @@
         tabindex="0"
       >
         <StatusBadge status={f.status} />
+        <FileIcon path={f.path} size={14} />
         <span class="min-w-0 flex-1 truncate">
           <span class={sel ? "text-fg" : ""}>{name}</span>
           {#if dir}<span class="ml-1.5 text-[12px] text-fg-faint">{dir}</span>{/if}

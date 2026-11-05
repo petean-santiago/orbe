@@ -9,26 +9,31 @@
     RotateCcw,
     Rows2,
     Columns2,
+    Sparkles,
     Type,
     X,
   } from "@lucide/svelte";
   import { fade, fly } from "svelte/transition";
   import { app } from "../state.svelte";
   import {
+    DEFAULT_SIZES,
     ACCENTS,
     COLUMN_LABELS,
     MONO_FONTS,
     SECTION_LABELS,
     TOOLBAR_LABELS,
     UI_FONTS,
+    TITLE_FONTS,
     settings,
   } from "../settings.svelte";
   import { confirmAction } from "../api";
   import Segmented from "./Segmented.svelte";
   import SortableList from "./SortableList.svelte";
   import Switch from "./Switch.svelte";
+  import AiSettings from "./AiSettings.svelte";
+  import type { SettingsPage } from "../ui.svelte";
 
-  type Page = "appearance" | "typography" | "layout" | "arrange";
+  type Page = SettingsPage;
   let { initial = "appearance" }: { initial?: Page } = $props();
   // svelte-ignore state_referenced_locally
   let page = $state<Page>(initial);
@@ -38,6 +43,7 @@
     { id: "typography", label: "Typography", hint: "Interface and code fonts", icon: Type },
     { id: "layout", label: "Layout", hint: "Where panels live", icon: LayoutPanelLeft },
     { id: "arrange", label: "Arrange", hint: "Drag to reorder, toggle to hide", icon: Columns3 },
+    { id: "ai", label: "AI assistant", hint: "Claude, OpenAI, local models", icon: Sparkles },
   ];
 
   const s = $derived(settings.value);
@@ -61,7 +67,7 @@
 <svelte:window onkeydown={onKey} />
 
 {#snippet row(title: string, hint: string, control: import("svelte").Snippet)}
-  <div class="flex items-center gap-6 border-b border-line-soft py-4 last:border-b-0">
+  <div class="flex items-center gap-6 border-b border-line-soft py-4 last:border-b-0 @max-[520px]:flex-col @max-[520px]:items-start @max-[520px]:gap-3">
     <div class="min-w-0 flex-1">
       <div class="text-[14px] font-medium text-fg">{title}</div>
       <div class="mt-0.5 text-[12.5px] text-fg-faint">{hint}</div>
@@ -78,7 +84,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
   role="presentation"
-  class="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-6"
+  class="fixed inset-0 z-40 flex items-center justify-center bg-black/35 p-6 max-[800px]:p-3"
   transition:fade={{ duration: 140 }}
   onclick={close}
 >
@@ -87,13 +93,13 @@
     aria-modal="true"
     aria-label="Settings"
     tabindex="-1"
-    class="glass-strong flex h-[min(680px,100%)] w-[min(960px,100%)] overflow-hidden rounded-2xl"
+    class="@container/dialog glass-strong flex h-[min(680px,100%)] w-[min(960px,100%)] overflow-hidden rounded-2xl"
     transition:fly={{ y: 10, duration: 200 }}
     onclick={(e) => e.stopPropagation()}
   >
     <!-- Navigation -->
-    <nav class="flex w-[230px] shrink-0 flex-col border-r border-line-soft bg-black/20 p-3">
-      <div class="px-2 pt-2 pb-5">
+    <nav class="flex w-[230px] shrink-0 flex-col border-r border-line-soft bg-black/20 p-3 @max-[820px]/dialog:w-[64px] @max-[820px]/dialog:p-2">
+      <div class="px-2 pt-2 pb-5 @max-[820px]/dialog:hidden">
         <div class="font-display text-[18px] font-semibold tracking-[-0.02em] text-fg">Settings</div>
         <div class="mt-1 text-[12px] text-fg-faint">Make Orbe yours</div>
       </div>
@@ -101,40 +107,41 @@
         {@const active = page === p.id}
         <button
           class={[
-            "relative mb-0.5 flex items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+            "relative mb-0.5 flex items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors @max-[820px]/dialog:justify-center @max-[820px]/dialog:px-0",
             active ? "bg-accent-soft" : "hover:bg-surface-2",
           ]}
           onclick={() => (page = p.id)}
+          title={p.label}
         >
           {#if active}
             <span class="absolute top-3 bottom-3 left-0 w-[3px] rounded-full bg-accent shadow-[0_0_10px_var(--color-accent)]"></span>
           {/if}
           <p.icon size={17} class={["mt-0.5 shrink-0", active ? "text-accent" : "text-fg-faint"]} />
-          <span class="min-w-0">
+          <span class="min-w-0 @max-[820px]/dialog:hidden">
             <span class={["block text-[13.5px] font-medium", active ? "text-fg" : "text-fg-muted"]}>{p.label}</span>
             <span class="block truncate text-[11.5px] text-fg-faint">{p.hint}</span>
           </span>
         </button>
       {/each}
       <div class="flex-1"></div>
-      <button class="btn h-9 justify-center" onclick={reset}>
-        <RotateCcw size={14} /> Reset to defaults
+      <button class="btn h-9 justify-center @max-[820px]/dialog:px-0" onclick={reset} title="Reset to defaults">
+        <RotateCcw size={14} /> <span class="@max-[820px]/dialog:hidden">Reset to defaults</span>
       </button>
     </nav>
 
     <!-- Content -->
     <section class="flex min-w-0 flex-1 flex-col">
-      <header class="flex h-16 shrink-0 items-center justify-between border-b border-line-soft px-8">
-        <h2 class="text-[17px] font-semibold text-fg">{pages.find((p) => p.id === page)?.label}</h2>
+      <header class="flex h-16 shrink-0 items-center justify-between border-b border-line-soft px-8 @max-[820px]/dialog:px-5">
+        <h2 class="font-display text-[21px] text-fg">{pages.find((p) => p.id === page)?.label}</h2>
         <button class="icon-btn size-8 rounded-lg" aria-label="Close settings" onclick={close}><X size={17} /></button>
       </header>
 
-      <div class="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+      <div class="@container min-h-0 flex-1 overflow-y-auto px-8 py-6 @max-[820px]/dialog:px-5">
         {#key page}
           <div in:fade={{ duration: 140 }}>
             {#if page === "appearance"}
               {@render group("Colour")}
-              <div class="grid grid-cols-4 gap-2.5">
+              <div class="grid grid-cols-4 gap-2.5 @max-[600px]:grid-cols-2">
                 {#each Object.entries(ACCENTS) as [id, a] (id)}
                   {@const active = s.accent === id}
                   <button
@@ -198,8 +205,39 @@
               {/snippet}
               {@render row("Interface size", "Scales the whole interface.", scaleCtl)}
             {:else if page === "typography"}
+              {@render group("Title font")}
+              <div class="grid grid-cols-3 gap-2.5 @max-[640px]:grid-cols-2">
+                {#each Object.entries(TITLE_FONTS) as [id, f] (id)}
+                  {@const active = s.titleFont === id}
+                  <button
+                    class={[
+                      "relative overflow-hidden rounded-xl border p-4 text-left transition-all",
+                      active ? "border-accent/60 bg-accent-soft" : "border-line-soft bg-surface-1 hover:border-line hover:bg-surface-2",
+                    ]}
+                    onclick={() => (s.titleFont = id as keyof typeof TITLE_FONTS)}
+                  >
+                    {#if active}
+                      <span class="absolute top-3 right-3 flex size-5 items-center justify-center rounded-full bg-accent-strong">
+                        <Check size={12} strokeWidth={3} class="text-white" />
+                      </span>
+                    {/if}
+                    <div
+                      class="bg-gradient-to-b from-white via-white to-accent bg-clip-text text-[34px] leading-[1.1] text-transparent"
+                      style:font-family={f.family}
+                      style:font-weight={f.weight}
+                      style:font-variation-settings={f.variation}
+                      style:letter-spacing={f.tracking}
+                    >
+                      Orbe
+                    </div>
+                    <div class="mt-2.5 text-[13.5px] font-medium text-fg">{f.label}</div>
+                    <div class="mt-0.5 text-[12px] text-fg-faint">{f.note}</div>
+                  </button>
+                {/each}
+              </div>
+
               {@render group("Interface font")}
-              <div class="grid grid-cols-2 gap-2.5">
+              <div class="grid grid-cols-2 gap-2.5 @max-[480px]:grid-cols-1">
                 {#each Object.entries(UI_FONTS) as [id, f] (id)}
                   {@const active = s.uiFont === id}
                   <button
@@ -224,7 +262,7 @@
               </div>
 
               {@render group("Code font")}
-              <div class="grid grid-cols-3 gap-2.5">
+              <div class="grid grid-cols-3 gap-2.5 @max-[600px]:grid-cols-1">
                 {#each Object.entries(MONO_FONTS) as [id, f] (id)}
                   {@const active = s.monoFont === id}
                   <button
@@ -268,6 +306,21 @@
                 />
               {/snippet}
               {@render row("Sidebar position", "Which side the branch sidebar sits on.", sideCtl)}
+              {#snippet modeCtl()}
+                <Segmented
+                  bind:value={s.sidebarMode}
+                  options={[
+                    { value: "auto", label: "Auto" },
+                    { value: "open", label: "Full" },
+                    { value: "icons", label: "Icons" },
+                  ]}
+                />
+              {/snippet}
+              {#snippet sizesCtl()}
+                <button class="btn h-8 px-3" onclick={() => (s.sizes = { ...DEFAULT_SIZES })}><RotateCcw size={13} /> Reset sizes</button>
+              {/snippet}
+              {@render row("Panel sizes", "Drag the edge between any two panels to resize them. Double-click an edge to reset it.", sizesCtl)}
+              {@render row("Sidebar size", "Auto shows icons only when the window is narrow. Toggle any time with Ctrl+\\ (⌘\\ on Mac).", modeCtl)}
               {#snippet detailsCtl()}
                 <Segmented
                   bind:value={s.detailsPosition}
@@ -286,7 +339,7 @@
               <p class="mb-5 rounded-xl border border-line-soft bg-surface-1 px-4 py-3 text-[13px] text-fg-muted">
                 Drag the rows to change the order. Use the switches to hide what you don't need. Changes apply instantly.
               </p>
-              <div class="grid grid-cols-1 gap-x-8 gap-y-2 xl:grid-cols-2">
+              <div class="grid grid-cols-1 gap-x-8 gap-y-2 @min-[680px]:grid-cols-2">
                 <div>
                   {@render group("Sidebar sections")}
                   <SortableList bind:items={s.sidebarSections} labels={SECTION_LABELS} />
@@ -300,6 +353,8 @@
                   <SortableList bind:items={s.columns} labels={COLUMN_LABELS} />
                 </div>
               </div>
+            {:else if page === "ai"}
+              <AiSettings />
             {/if}
           </div>
         {/key}

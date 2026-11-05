@@ -60,3 +60,31 @@ export const STATUS_META: Record<FileStatus, { letter: string; label: string; co
 
 export const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 export const modKey = isMac ? "⌘" : "Ctrl";
+
+/** Why `name` can't be a Git branch or tag name, or null if it's fine. */
+export function refNameError(name: string, what = "Branch"): string | null {
+  const n = name.trim();
+  if (!n) return `${what} name is required.`;
+  if (/\s/.test(n)) return "Spaces aren't allowed — try a dash instead.";
+  if (/[~^:?*[\\]/.test(n)) return "These characters aren't allowed: ~ ^ : ? * [ \\";
+  if (n.includes("..") || n.includes("@{") || n.includes("//")) return `That isn't a valid ${what.toLowerCase()} name.`;
+  if (n.startsWith("-") || n.startsWith("/") || n.endsWith("/") || n.endsWith(".") || n.endsWith(".lock") || n === "@")
+    return `That isn't a valid ${what.toLowerCase()} name.`;
+  return null;
+}
+
+/** Why `path` can't be used for a new file or folder, or null if it's fine. */
+export function pathError(path: string): string | null {
+  const p = path.trim();
+  if (!p) return "A name is required.";
+  if (p.split(/[\\/]/).some((part) => part === "..")) return "Paths must stay inside the repository.";
+  if (/^[a-zA-Z]:|^[\\/]/.test(p)) return "Use a path relative to the repository.";
+  if (/[<>:"|?*]/.test(p)) return 'These characters aren\'t allowed: < > : " | ? *';
+  return null;
+}
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}

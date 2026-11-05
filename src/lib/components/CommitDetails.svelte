@@ -1,13 +1,20 @@
 <script lang="ts">
-  import { Check, Copy, GitCommitHorizontal, GitMerge } from "@lucide/svelte";
+  import { Check, Copy, GitCommitHorizontal, GitMerge, Sparkles } from "@lucide/svelte";
+  import { explainCommit } from "../assistant.svelte";
   import { git, type Commit, type FileChange } from "../api";
   import { app } from "../state.svelte";
   import { fullDate, relativeTime } from "../format";
   import Avatar from "./Avatar.svelte";
   import DiffView from "./DiffView.svelte";
   import FileList from "./FileList.svelte";
+  import Resizer from "./Resizer.svelte";
+  import { settings, DEFAULT_SIZES } from "../settings.svelte";
 
   let { commit, stacked = false }: { commit: Commit; stacked?: boolean } = $props();
+
+  let width = $state(1000);
+  // Too narrow for the info column beside the diff: stack them.
+  const vertical = $derived(stacked || width < 760);
 
   let files = $state<FileChange[]>([]);
   let selected = $state<FileChange | null>(null);
@@ -57,10 +64,13 @@
   );
 </script>
 
-<div class={["flex h-full min-h-0", stacked && "flex-col"]}>
-  <div class={["flex shrink-0 flex-col border-line-soft", stacked ? "max-h-[45%] border-b" : "w-[360px] border-r"]}>
+<div class={["flex h-full min-h-0", vertical && "flex-col"]} bind:clientWidth={width}>
+  <div
+    class={["flex shrink-0 flex-col border-line-soft", vertical ? "max-h-[45%] border-b" : "border-r"]}
+    style:width={vertical ? undefined : `min(${settings.value.sizes.commitInfo}px, 55%)`}
+  >
     <div class="animate-fade-in border-b border-line-soft px-5 py-4">
-      <h2 class="selectable text-[15px] leading-snug font-semibold text-fg">{commit.subject}</h2>
+      <h2 class="selectable font-display text-[17px] leading-snug text-fg">{commit.subject}</h2>
       <div class="mt-3 flex items-center gap-2.5">
         <Avatar name={commit.author} email={commit.email} size={28} />
         <div class="min-w-0 leading-tight">
@@ -79,6 +89,13 @@
           <GitCommitHorizontal size={12} />
           {commit.shortHash}
           {#if copied}<Check size={11} class="text-added" />{:else}<Copy size={11} class="opacity-60" />{/if}
+        </button>
+        <button
+          class="inline-flex h-6 items-center gap-1.5 rounded-sm border border-accent/25 bg-accent-soft px-2 text-accent-fg transition-colors hover:border-accent/50"
+          title="Explain this commit with AI"
+          onclick={() => explainCommit(app.active, commit)}
+        >
+          <Sparkles size={11} /> Explain
         </button>
         {#each parents as p}
           <button
@@ -102,7 +119,10 @@
     </div>
   </div>
 
+  {#if !vertical}
+    <Resizer bind:value={settings.value.sizes.commitInfo} min={240} max={600} initial={DEFAULT_SIZES.commitInfo} label="Resize commit details" />
+  {/if}
   <div class="min-h-0 min-w-0 flex-1">
-    <DiffView diff={selected ? diff : null} loading={loadingDiff} />
+    <DiffView diff={selected ? diff : null} path={selected?.path ?? null} loading={loadingDiff} />
   </div>
 </div>

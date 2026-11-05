@@ -1,9 +1,20 @@
 <script lang="ts">
   import {
+    Archive,
+    ArchiveRestore,
     ArrowDown,
     ArrowUp,
+    Download,
     FileDiff,
+    FilePlus,
+    FileSearch,
     FolderOpen,
+    FolderPlus,
+    FolderTree,
+    GitBranchPlus,
+    ListChecks,
+    Sparkles,
+    Tag,
     GitBranch,
     GitCommitHorizontal,
     GitGraph,
@@ -15,6 +26,9 @@
   import { fade, scale } from "svelte/transition";
   import { app } from "../state.svelte";
   import { relativeTime } from "../format";
+  import { ui } from "../ui.svelte";
+  import { cloneRepository, createRepository, newBranch, newFile, newFolder, newTag, stashChanges } from "../actions";
+  import { reviewStaged, summarizeChanges } from "../assistant.svelte";
 
   interface Item {
     id: string;
@@ -33,6 +47,19 @@
   const actions: Item[] = [
     { id: "a-changes", group: "Actions", label: "Go to Changes", icon: FileDiff, run: () => (app.view = "changes") },
     { id: "a-history", group: "Actions", label: "Go to History", icon: GitGraph, run: () => (app.view = "history") },
+    { id: "a-files", group: "Actions", label: "Go to Files", icon: FolderTree, run: () => (app.view = "files") },
+    { id: "a-switch", group: "Actions", label: "Switch branch…", icon: GitBranch, run: () => (ui.branchSwitcher = true) },
+    { id: "a-branch", group: "Create", label: "New branch…", icon: GitBranchPlus, run: () => newBranch() },
+    { id: "a-tag", group: "Create", label: "New tag…", icon: Tag, run: () => newTag() },
+    { id: "a-file", group: "Create", label: "New file…", icon: FilePlus, run: () => newFile() },
+    { id: "a-folder", group: "Create", label: "New folder…", icon: FolderPlus, run: () => newFolder() },
+    { id: "a-stash", group: "Create", label: "Stash changes…", icon: Archive, run: () => stashChanges() },
+    { id: "a-pop", group: "Create", label: "Apply latest stash", icon: ArchiveRestore, run: () => app.active.stashPop() },
+    { id: "a-clone", group: "Create", label: "Clone repository…", icon: Download, run: () => cloneRepository() },
+    { id: "a-init", group: "Create", label: "New repository…", icon: FolderPlus, run: () => createRepository() },
+    { id: "ai-panel", group: "AI", label: "Open AI assistant", icon: Sparkles, run: () => (ui.assistant = true) },
+    { id: "ai-summary", group: "AI", label: "Summarize my changes", icon: FileSearch, run: () => summarizeChanges(app.active) },
+    { id: "ai-review", group: "AI", label: "Review staged changes", icon: ListChecks, run: () => reviewStaged(app.active) },
     { id: "a-fetch", group: "Actions", label: "Fetch all remotes", icon: RefreshCw, run: () => app.remote("fetch") },
     { id: "a-pull", group: "Actions", label: "Pull", icon: ArrowDown, run: () => app.remote("pull") },
     { id: "a-push", group: "Actions", label: "Push", icon: ArrowUp, run: () => app.remote("push") },
@@ -127,7 +154,7 @@
     role="dialog"
     aria-label="Command palette"
     tabindex="-1"
-    class="w-[600px] overflow-hidden glass-strong rounded-2xl"
+    class="w-[min(600px,calc(100vw-32px))] overflow-hidden glass-strong rounded-2xl"
     transition:scale={{ start: 0.97, duration: 160 }}
     onclick={(e) => e.stopPropagation()}
     onkeydown={onKey}

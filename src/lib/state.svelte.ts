@@ -1,7 +1,36 @@
-import { git, pickFolder, type Branch, type Commit, type FileChange, type RepoInfo } from "./api";
+import { SvelteSet } from "svelte/reactivity";
+import {
+  chatStore,
+  git,
+  pickDirectory,
+  pickFolder,
+  type Branch,
+  type ChatMessage,
+  type Commit,
+  type FileChange,
+  type RepoInfo,
+  type TreeEntry,
+} from "./api";
 import { layoutGraph, type GraphLayout } from "./graph";
 
-export type View = "history" | "changes";
+export type View = "history" | "changes" | "files";
+
+/** One turn of the assistant conversation. `display` is what the user sees. */
+export interface ChatTurn extends ChatMessage {
+  display?: string;
+  error?: boolean;
+}
+
+/** A saved AI conversation, like a chat in any AI app. */
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  turns: ChatTurn[];
+}
+
+const MAX_CONVERSATIONS = 50;
 export type RemoteOp = "fetch" | "pull" | "push";
 
 export interface RecentRepo {
@@ -21,6 +50,7 @@ type ToastFn = (kind: Toast["kind"], title: string, message?: string) => void;
 
 const RECENTS_KEY = "orbe.recentRepos";
 const TABS_KEY = "orbe.tabs";
+const DRAFTS_KEY = "orbe.commitDrafts";
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -58,8 +88,116 @@ export class RepoTab {
   remoteOp = $state<RemoteOp | null>(null);
 
   /** Unsent commit message, kept per tab. */
-  draftSummary = $state("");
-  draftDescription = $state("");
+  /** First line is the summary, the rest the description (like VS Code). */
+  #draft = $state("");
+  get draftMessage() {
+    return this.#draft;
+  }
+  /** Saved per repository, so a reload or restart never loses a half-written message. */
+  set draftMessage(text: string) {
+    this.#draft = text;
+    const path = this.repo?.path;
+    if (!path) return;
+    const drafts = loadJSON<Record<string, string>>(DRAFTS_KEY, {});
+    if (text.trim()) drafts[path] = text;
+    else delete drafts[path];
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  }
+
+  /** Whole-project file tree (loaded the first time the Files view opens). */
+  tree = $state.raw<TreeEntry[]>([]);
+  treeLoaded = $state(false);
+  treeLoading = $state(false);
+  selectedFile = $state<string | null>(null);
+  expanded = new SvelteSet<string>();
+
+  /** Branch being switched to, for instant feedback while git works. */
+  pendingCheckout = $state<string | null>(null);
+
+  /** AI conversations for this repository, saved to disk and restored on open. */
+  chats = $state<Conversation[]>([]);
+  activeChatId = $state<string | null>(null);
+  /** Conversations waiting for a reply. */
+  busyChats = new SvelteSet<string>();
+  activeChat = $derived(this.chats.find((c) => c.id === this.activeChatId) ?? null);
+
+  /** Turns of the open conversation. */
+  get chat(): ChatTurn[] {
+    return this.activeChat?.turns ?? [];
+  }
+
+  get chatBusy(): boolean {
+    return !!this.activeChatId && this.busyChats.has(this.activeChatId);
+  }
+
+  /** Recent conversations first. */
+  get sortedChats(): Conversation[] {
+    return [...this.chats].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async loadChats() {
+    const repo = this.repo?.path;
+    if (!repo) return;
+    try {
+      const raw = await chatStore.load(repo);
+      if (!raw || this.repo?.path !== repo) return;
+      const data = JSON.parse(raw) as { active?: string | null; chats?: Conversation[] };
+      this.chats = Array.isArray(data.chats) ? data.chats : [];
+      this.activeChatId = this.chats.some((c) => c.id === data.active) ? (data.active ?? null) : null;
+    } catch {
+      // A corrupt file shouldn't block the repository; start fresh.
+      this.chats = [];
+    }
+  }
+
+  private saveTimer: ReturnType<typeof setTimeout> | undefined;
+  saveChats() {
+    const repo = this.repo?.path;
+    if (!repo) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      // Keep the most recent conversations.
+      const chats = this.sortedChats.slice(0, MAX_CONVERSATIONS);
+      const data = JSON.stringify({ version: 1, repo, active: this.activeChatId, chats: $state.snapshot(chats) });
+      chatStore.save(repo, data).catch((e) => this.toast("error", "Couldn't save the conversation", errorText(e)));
+    }, 300);
+  }
+
+  /** Start a fresh conversation (the current one stays in the history). */
+  newChat() {
+    this.activeChatId = null;
+    this.saveChats();
+  }
+
+  openChat(id: string) {
+    this.activeChatId = id;
+    this.saveChats();
+  }
+
+  /** Close a conversation for good. */
+  closeChat(id: string) {
+    this.chats = this.chats.filter((c) => c.id !== id);
+    if (this.activeChatId === id) this.activeChatId = null;
+    this.saveChats();
+  }
+
+  /** The open conversation, creating one titled after the first message if needed. */
+  ensureChat(firstMessage: string): Conversation {
+    if (this.activeChat) return this.activeChat;
+    const now = Date.now();
+    const title = firstMessage.replace(/\s+/g, " ").trim();
+    const chat: Conversation = {
+      id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      title: title.length > 60 ? `${title.slice(0, 57)}…` : title || "New chat",
+      createdAt: now,
+      updatedAt: now,
+      turns: [],
+    };
+    this.chats.push(chat);
+    this.activeChatId = chat.id;
+    // Return the reactive proxy so later pushes update the UI.
+    return this.chats[this.chats.length - 1];
+  }
 
   headBranch = $derived(this.branches.find((b) => b.isHead) ?? null);
   staged = $derived(this.status.filter((s) => s.staged));
@@ -78,6 +216,8 @@ export class RepoTab {
       this.selectedChange = null;
       await this.refresh();
       this.selectedHash = this.commits[0]?.hash ?? null;
+      void this.loadChats();
+      this.#draft = loadJSON<Record<string, string>>(DRAFTS_KEY, {})[info.path] ?? "";
       return true;
     } catch (e) {
       this.toast("error", "Couldn't open repository", errorText(e));
@@ -102,6 +242,9 @@ export class RepoTab {
       this.graph = layoutGraph(commits);
       this.branches = branches;
       this.status = status;
+      const head = branches.find((b) => b.isHead);
+      if (head && this.repo.head !== head.name) this.repo = { ...this.repo, head: head.name };
+      if (this.treeLoaded) void this.loadTree();
       if (this.selectedChange) {
         const sel = this.selectedChange;
         this.selectedChange =
@@ -114,14 +257,35 @@ export class RepoTab {
     }
   }
 
-  private async mutate(work: (path: string) => Promise<unknown>, failTitle: string) {
-    if (!this.repo) return;
+  async loadTree() {
+    const repo = this.repo;
+    if (!repo) return;
+    this.treeLoading = true;
+    try {
+      const tree = await git.tree(repo.path);
+      if (this.repo?.path !== repo.path) return;
+      this.tree = tree;
+      this.treeLoaded = true;
+    } catch (e) {
+      this.toast("error", "Couldn't read the project files", errorText(e));
+    } finally {
+      this.treeLoading = false;
+    }
+  }
+
+  /** Run a git operation, report the outcome and refresh. Resolves to success. */
+  private async mutate(work: (path: string) => Promise<unknown>, failTitle: string, success?: string): Promise<boolean> {
+    if (!this.repo) return false;
+    let ok = true;
     try {
       await work(this.repo.path);
+      if (success) this.toast("success", success);
     } catch (e) {
+      ok = false;
       this.toast("error", failTitle, errorText(e));
     }
     await this.refresh();
+    return ok;
   }
 
   stage(files: FileChange[]) {
@@ -147,8 +311,7 @@ export class RepoTab {
       const short = await git.commit(this.repo.path, message, amend);
       this.toast("success", amend ? "Commit amended" : "Committed", `${short} · ${message.split("\n")[0]}`);
       this.selectedChange = null;
-      this.draftSummary = "";
-      this.draftDescription = "";
+      this.draftMessage = "";
       await this.refresh();
       this.selectedHash = this.commits[0]?.hash ?? null;
       return true;
@@ -171,14 +334,117 @@ export class RepoTab {
         remote = false;
       }
     }
+    // Optimistic update: show the new branch immediately, roll back on failure.
+    const target = remote ? name.split("/").slice(1).join("/") : name;
+    const before = { branches: this.branches, repo };
+    this.pendingCheckout = branch.name;
+    this.branches = this.branches.map((b) => ({ ...b, isHead: b.kind === "local" && b.name === target }));
+    this.repo = { ...repo, head: target };
     try {
       await git.checkout(repo.path, name, remote);
-      this.repo = { ...repo, head: remote ? name.split("/").slice(1).join("/") : name };
-      this.toast("success", "Switched branch", this.repo.head ?? name);
+      this.toast("success", "Switched branch", target);
     } catch (e) {
+      if (this.repo?.path === repo.path) {
+        this.branches = before.branches;
+        this.repo = before.repo;
+      }
       this.toast("error", "Couldn't switch branch", errorText(e));
+    } finally {
+      this.pendingCheckout = null;
     }
     await this.refresh();
+  }
+
+  // ---- creating and managing refs ---------------------------------------------
+
+  async createBranch(name: string, start: string | null, checkout: boolean) {
+    const ok = await this.mutate(
+      (p) => git.createBranch(p, name, start, checkout),
+      "Couldn't create branch",
+      checkout ? `Switched to new branch ${name}` : `Created branch ${name}`,
+    );
+    if (ok && checkout && this.repo) this.repo = { ...this.repo, head: name };
+    return ok;
+  }
+
+  renameBranch(old: string, name: string) {
+    return this.mutate((p) => git.renameBranch(p, old, name), "Couldn't rename branch", `Renamed to ${name}`);
+  }
+
+  deleteBranch(name: string, force: boolean) {
+    return this.mutate((p) => git.deleteBranch(p, name, force), "Couldn't delete branch", `Deleted branch ${name}`);
+  }
+
+  deleteRemoteBranch(name: string) {
+    return this.mutate((p) => git.deleteRemoteBranch(p, name), "Couldn't delete remote branch", `Deleted ${name}`);
+  }
+
+  merge(name: string) {
+    const into = this.headBranch?.name ?? "the current branch";
+    return this.mutate((p) => git.merge(p, name), "Merge stopped", `Merged ${name} into ${into}`);
+  }
+
+  createTag(name: string, target: string | null, message: string | null) {
+    return this.mutate((p) => git.createTag(p, name, target, message), "Couldn't create tag", `Created tag ${name}`);
+  }
+
+  deleteTag(name: string) {
+    return this.mutate((p) => git.deleteTag(p, name), "Couldn't delete tag", `Deleted tag ${name}`);
+  }
+
+  stash(message: string, includeUntracked: boolean) {
+    return this.mutate((p) => git.stash(p, message, includeUntracked), "Couldn't stash changes", "Changes stashed");
+  }
+
+  stashPop() {
+    return this.mutate((p) => git.stashPop(p), "Couldn't apply the stash", "Stash applied");
+  }
+
+  // ---- project files ------------------------------------------------------------
+
+  private revealInTree(path: string) {
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) this.expanded.add(parts.slice(0, i).join("/"));
+  }
+
+  async createFile(file: string) {
+    const ok = await this.mutate((p) => git.createFile(p, file), "Couldn't create file", `Created ${file}`);
+    if (ok) {
+      await this.loadTree();
+      this.revealInTree(file);
+      this.selectedFile = file;
+      this.view = "files";
+    }
+    return ok;
+  }
+
+  async createFolder(folder: string) {
+    const ok = await this.mutate((p) => git.createFolder(p, folder), "Couldn't create folder", `Created ${folder}/`);
+    if (ok) {
+      await this.loadTree();
+      this.revealInTree(folder + "/x");
+      this.view = "files";
+    }
+    return ok;
+  }
+
+  async renamePath(from: string, to: string) {
+    const ok = await this.mutate((p) => git.renamePath(p, from, to), "Couldn't rename", `Renamed to ${to}`);
+    if (ok) {
+      await this.loadTree();
+      this.revealInTree(to);
+      if (this.selectedFile === from) this.selectedFile = to;
+    }
+    return ok;
+  }
+
+  async deletePath(target: string) {
+    const ok = await this.mutate((p) => git.deletePath(p, target), "Couldn't delete", `Moved ${target} to the trash`);
+    if (ok) {
+      await this.loadTree();
+      if (this.selectedFile === target || this.selectedFile?.startsWith(target + "/")) this.selectedFile = null;
+    }
+    return ok;
   }
 
   async remote(op: RemoteOp) {
@@ -208,6 +474,8 @@ class AppState {
   recents = $state<RecentRepo[]>(loadJSON(RECENTS_KEY, []));
   paletteOpen = $state(false);
   settingsOpen = $state(false);
+  /** URL being cloned, while a clone runs. */
+  cloning = $state<string | null>(null);
   toasts = $state<Toast[]>([]);
 
   active = $derived(this.tabs.find((t) => t.id === this.activeId) ?? this.tabs[0]);
@@ -316,6 +584,33 @@ class AppState {
     const path = await pickFolder();
     if (path) await this.open(path);
   }
+
+  /** `git init` a folder (created if needed) and open it. */
+  async initRepo(path: string) {
+    try {
+      await git.initRepo(path);
+      await this.open(path);
+      this.toast("success", "Repository created", path);
+    } catch (e) {
+      this.toast("error", "Couldn't create repository", errorText(e));
+    }
+  }
+
+  /** Clone into `dest` and open it in a tab. Shows progress on a fresh tab. */
+  async cloneRepo(url: string, dest: string) {
+    this.cloning = url;
+    try {
+      const path = await git.cloneRepo(url, dest);
+      await this.open(path);
+      this.toast("success", "Cloned", url);
+    } catch (e) {
+      this.toast("error", "Clone failed", errorText(e));
+    } finally {
+      this.cloning = null;
+    }
+  }
+
+  pickDirectory = pickDirectory;
 
   /** Return the active tab to the welcome screen. */
   close() {

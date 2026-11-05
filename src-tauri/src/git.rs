@@ -6,7 +6,9 @@
 //! command surface exposed to the frontend.
 
 use serde::Serialize;
-use std::path::Path;
+use std::fs;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 type CmdResult<T> = Result<T, String>;
@@ -48,7 +50,11 @@ fn run_git_allow(repo: &str, args: &[&str], ok_codes: &[i32]) -> CmdResult<Strin
     if ok_codes.contains(&code) {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let mut stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            // Some commands (merge conflicts, for example) report on stdout.
+            stderr = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
         if stderr.is_empty() {
             Err(format!(
                 "git {} failed (exit code {code})",
@@ -61,7 +67,7 @@ fn run_git_allow(repo: &str, args: &[&str], ok_codes: &[i32]) -> CmdResult<Strin
 }
 
 /// Run blocking git work off the async runtime so the UI never stalls.
-async fn blocking<T, F>(f: F) -> CmdResult<T>
+pub(crate) async fn blocking<T, F>(f: F) -> CmdResult<T>
 where
     T: Send + 'static,
     F: FnOnce() -> CmdResult<T> + Send + 'static,
@@ -127,6 +133,8 @@ pub struct Branch {
     upstream: Option<String>,
     ahead: u32,
     behind: u32,
+    /// Unix time of the tip commit (or tag creation).
+    updated: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +292,7 @@ pub async fn get_branches(path: String) -> CmdResult<Vec<Branch>> {
             &path,
             &[
                 "for-each-ref",
-                "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(upstream:track,nobracket)",
+                "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(creatordate:unix)",
                 "refs/heads",
                 "refs/remotes",
                 "refs/tags",
@@ -294,7 +302,7 @@ pub async fn get_branches(path: String) -> CmdResult<Vec<Branch>> {
         let mut branches = Vec::new();
         for line in out.lines() {
             let f: Vec<&str> = line.split('\x1f').collect();
-            if f.len() < 5 {
+            if f.len() < 6 {
                 continue;
             }
             let full = f[0];
@@ -325,6 +333,7 @@ pub async fn get_branches(path: String) -> CmdResult<Vec<Branch>> {
                 upstream: if f[3].is_empty() { None } else { Some(f[3].to_string()) },
                 ahead,
                 behind,
+                updated: f[5].trim().parse().unwrap_or(0),
             });
         }
         Ok(branches)
@@ -524,6 +533,349 @@ pub async fn push(path: String) -> CmdResult<()> {
             run_git(&path, &["push", "-u", &remote, "HEAD"])?;
         }
         Ok(())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Branches, tags and stashes
+// ---------------------------------------------------------------------------
+
+fn check_branch_name(repo: &str, name: &str) -> CmdResult<()> {
+    run_git(repo, &["check-ref-format", "--branch", name])
+        .map(|_| ())
+        .map_err(|_| format!("\"{name}\" is not a valid branch name."))
+}
+
+#[tauri::command]
+pub async fn create_branch(
+    path: String,
+    name: String,
+    start: Option<String>,
+    checkout: bool,
+) -> CmdResult<()> {
+    blocking(move || {
+        check_branch_name(&path, &name)?;
+        let mut args = if checkout {
+            vec!["switch", "-c", name.as_str()]
+        } else {
+            vec!["branch", name.as_str()]
+        };
+        if let Some(s) = start.as_deref().filter(|s| !s.is_empty()) {
+            args.push(s);
+        }
+        run_git(&path, &args).map(|_| ())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rename_branch(path: String, old: String, new: String) -> CmdResult<()> {
+    blocking(move || {
+        check_branch_name(&path, &new)?;
+        run_git(&path, &["branch", "-m", &old, &new]).map(|_| ())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_branch(path: String, name: String, force: bool) -> CmdResult<()> {
+    blocking(move || {
+        let flag = if force { "-D" } else { "-d" };
+        run_git(&path, &["branch", flag, &name]).map(|_| ())
+    })
+    .await
+}
+
+/// Delete a branch on its remote, e.g. `origin/feature/x`.
+#[tauri::command]
+pub async fn delete_remote_branch(path: String, name: String) -> CmdResult<()> {
+    blocking(move || {
+        let (remote, branch) = name
+            .split_once('/')
+            .ok_or_else(|| format!("\"{name}\" is not a remote branch."))?;
+        run_git(&path, &["push", remote, "--delete", branch]).map(|_| ())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn merge_branch(path: String, name: String) -> CmdResult<()> {
+    blocking(move || run_git(&path, &["merge", "--no-edit", &name]).map(|_| ())).await
+}
+
+#[tauri::command]
+pub async fn create_tag(
+    path: String,
+    name: String,
+    target: Option<String>,
+    message: Option<String>,
+) -> CmdResult<()> {
+    blocking(move || {
+        run_git(&path, &["check-ref-format", &format!("refs/tags/{name}")])
+            .map_err(|_| format!("\"{name}\" is not a valid tag name."))?;
+        let msg = message.unwrap_or_default();
+        let mut args = vec!["tag"];
+        if !msg.trim().is_empty() {
+            args.extend(["-a", "-m", msg.as_str()]);
+        }
+        args.push(&name);
+        if let Some(t) = target.as_deref().filter(|t| !t.is_empty()) {
+            args.push(t);
+        }
+        run_git(&path, &args).map(|_| ())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_tag(path: String, name: String) -> CmdResult<()> {
+    blocking(move || run_git(&path, &["tag", "-d", &name]).map(|_| ())).await
+}
+
+#[tauri::command]
+pub async fn stash_save(path: String, message: String, include_untracked: bool) -> CmdResult<()> {
+    blocking(move || {
+        let mut args = vec!["stash", "push"];
+        if include_untracked {
+            args.push("--include-untracked");
+        }
+        if !message.trim().is_empty() {
+            args.extend(["-m", message.as_str()]);
+        }
+        run_git(&path, &args).map(|_| ())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stash_pop(path: String) -> CmdResult<()> {
+    blocking(move || run_git(&path, &["stash", "pop"]).map(|_| ())).await
+}
+
+// ---------------------------------------------------------------------------
+// Creating and cloning repositories
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn init_repo(path: String) -> CmdResult<()> {
+    blocking(move || {
+        fs::create_dir_all(&path).map_err(|e| format!("Couldn't create the folder: {e}"))?;
+        run_git(&path, &["init"]).map(|_| ())
+    })
+    .await
+}
+
+/// Clone `url` into `dest` (which must not exist yet, or be empty). Returns `dest`.
+#[tauri::command]
+pub async fn clone_repo(url: String, dest: String) -> CmdResult<String> {
+    blocking(move || {
+        let target = PathBuf::from(&dest);
+        let non_empty = target.exists()
+            && fs::read_dir(&target).map(|mut d| d.next().is_some()).unwrap_or(true);
+        if non_empty {
+            return Err(format!("{dest} already exists and is not empty."));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| "Choose a folder to clone into.".to_string())?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        run_git(&parent.to_string_lossy(), &["clone", "--", &url, &dest])?;
+        Ok(dest)
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Text for the AI assistant
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_staged_diff(path: String) -> CmdResult<String> {
+    blocking(move || {
+        run_git(&path, &["diff", "--cached", "--no-ext-diff", "-M", "--stat", "--patch"])
+    })
+    .await
+}
+
+/// Everything not yet committed: tracked changes plus the list of new files.
+#[tauri::command]
+pub async fn get_working_diff(path: String) -> CmdResult<String> {
+    blocking(move || {
+        let mut out = run_git(&path, &["diff", "HEAD", "--no-ext-diff", "-M", "--stat", "--patch"])
+            .or_else(|_| {
+                run_git(&path, &["diff", "--cached", "--no-ext-diff", "--stat", "--patch"])
+            })?;
+        let untracked = run_git(&path, &["ls-files", "--others", "--exclude-standard"])?;
+        if !untracked.trim().is_empty() {
+            out.push_str("\nNew untracked files:\n");
+            out.push_str(&untracked);
+        }
+        Ok(out)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_commit_patch(path: String, hash: String) -> CmdResult<String> {
+    blocking(move || {
+        run_git(
+            &path,
+            &["show", "--no-ext-diff", "-M", "--stat", "--patch", "--format=fuller", &hash],
+        )
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Project files (the whole working tree, not only changes)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct TreeEntry {
+    path: String,
+    dir: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    text: Option<String>,
+    binary: bool,
+    size: u64,
+    truncated: bool,
+}
+
+const MAX_TREE_ENTRIES: usize = 100_000;
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Resolve a repository-relative path, refusing anything that escapes the repo.
+fn safe_join(root: &str, rel: &str) -> CmdResult<PathBuf> {
+    let rel = rel.trim().trim_start_matches(['/', '\\']);
+    if rel.is_empty() {
+        return Err("Please enter a name.".into());
+    }
+    let p = Path::new(rel);
+    for c in p.components() {
+        match c {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => return Err("Paths must stay inside the repository.".into()),
+        }
+    }
+    Ok(Path::new(root).join(p))
+}
+
+/// Every file and folder in the working tree, honouring .gitignore.
+#[tauri::command]
+pub async fn list_tree(path: String) -> CmdResult<Vec<TreeEntry>> {
+    blocking(move || {
+        let root = PathBuf::from(&path);
+        let walker = ignore::WalkBuilder::new(&root)
+            .hidden(false)
+            .parents(false)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build();
+        let mut out = Vec::new();
+        for entry in walker.flatten() {
+            if entry.depth() == 0 {
+                continue;
+            }
+            let Ok(rel) = entry.path().strip_prefix(&root) else {
+                continue;
+            };
+            out.push(TreeEntry {
+                path: rel.to_string_lossy().replace('\\', "/"),
+                dir: entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
+            });
+            if out.len() >= MAX_TREE_ENTRIES {
+                break;
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn read_file(path: String, file: String) -> CmdResult<FileContent> {
+    blocking(move || {
+        let full = safe_join(&path, &file)?;
+        let size = fs::metadata(&full).map_err(|e| e.to_string())?.len();
+        let mut buf = Vec::new();
+        fs::File::open(&full)
+            .map_err(|e| e.to_string())?
+            .take(MAX_FILE_BYTES)
+            .read_to_end(&mut buf)
+            .map_err(|e| e.to_string())?;
+        let binary = buf[..buf.len().min(8000)].contains(&0);
+        Ok(FileContent {
+            text: if binary {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&buf).into_owned())
+            },
+            binary,
+            size,
+            truncated: size > MAX_FILE_BYTES,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn create_file(path: String, file: String) -> CmdResult<()> {
+    blocking(move || {
+        let full = safe_join(&path, &file)?;
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&full)
+            .map(|_| ())
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::AlreadyExists => format!("{file} already exists."),
+                _ => e.to_string(),
+            })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn create_folder(path: String, folder: String) -> CmdResult<()> {
+    blocking(move || {
+        let full = safe_join(&path, &folder)?;
+        if full.exists() {
+            return Err(format!("{folder} already exists."));
+        }
+        fs::create_dir_all(&full).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn rename_path(path: String, from: String, to: String) -> CmdResult<()> {
+    blocking(move || {
+        let src = safe_join(&path, &from)?;
+        let dst = safe_join(&path, &to)?;
+        if dst.exists() {
+            return Err(format!("{to} already exists."));
+        }
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&src, &dst).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Move a file or folder to the system trash, so it can be recovered.
+#[tauri::command]
+pub async fn delete_path(path: String, target: String) -> CmdResult<()> {
+    blocking(move || {
+        let full = safe_join(&path, &target)?;
+        trash::delete(&full).map_err(|e| format!("Couldn't move {target} to the trash: {e}"))
     })
     .await
 }

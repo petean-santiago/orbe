@@ -35,7 +35,7 @@ commit, branch, fetch/pull/push) works. See [Roadmap](#roadmap) for what's next.
 - **Rust** stable (via `rustup`) and the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/)
   - **Windows:** Visual Studio 2022 *Build Tools* with "Desktop development with C++" (Rust needs the MSVC linker). WebView2 ships with Windows 11.
   - **macOS:** Xcode Command Line Tools (`xcode-select --install`).
-  - **Linux:** `libwebkit2gtk-4.1-dev`, `build-essential`, `libssl-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`, or the equivalents for your distro.
+  - **Linux:** `libwebkit2gtk-4.1-dev`, `build-essential`, `libssl-dev`, `librsvg2-dev`, `libayatana-appindicator3-dev`, `libdbus-1-dev` (keychain), or the equivalents for your distro.
 
 ### Run it
 
@@ -61,9 +61,11 @@ URL parameters jump straight to a given state:
 | ----------------------------- | ------------------------------------------------- |
 | `/?demo`                      | The demo repository                               |
 | `/?demo=2`                    | Two demo repositories in tabs                     |
-| `/?demo&view=changes`         | The Changes view                                  |
+| `/?demo&view=changes`         | The Changes view (also `view=files`)              |
 | `/?demo&palette`              | The command palette                               |
-| `/?demo&settings=arrange`     | Settings on a page (`appearance`, `typography`, `layout`, `arrange`) |
+| `/?demo&switcher`             | The branch switcher                               |
+| `/?demo&assistant`            | The AI assistant panel (with demo replies)        |
+| `/?demo&settings=arrange`     | Settings on a page (`appearance`, `typography`, `layout`, `arrange`, `ai`) |
 
 > `pnpm dev` and `pnpm tauri dev` both use port **1420**. Stop one before starting the other.
 
@@ -71,15 +73,22 @@ URL parameters jump straight to a given state:
 
 - **Tabs:** open several repositories at once. Drag to reorder, middle-click to close. Open tabs are restored on restart, and each tab keeps its own view, selection and unfinished commit message.
 - **History:** virtualized commit list with a coloured lane graph, branch and tag pills, commit details and per-file diffs. Details can sit below or beside the list.
-- **Changes:** stage, unstage and discard files, a diff viewer, and a commit composer with amend (`Ctrl/⌘ Enter`).
-- **Sidebar:** workspace views, local branches with ahead/behind counts, remotes and tags. Double-click a branch to check it out.
+- **Changes** (laid out like VS Code source control): the message box and **Commit** button sit at the top, with *Staged Changes* and *Changes* underneath. The first line of the message is the summary. With nothing staged, **Commit all** commits every change; use **+** on files to commit only those. The wand button writes the message with AI from exactly what will be committed, and the ▾ menu offers *Commit & Push* and *Amend last commit*. `Ctrl/⌘ Enter` commits.
+- **Syntax highlighting** for 340+ languages (Shiki, the TextMate grammars VS Code uses) in the file viewer and every diff. Colours follow Orbe's palette and the accent; grammars load on demand.
+- **Files:** the whole project as a tree (respecting `.gitignore`) with VS Code–style icons (coloured folders that open and close, emblems for `src`, `docs`, `tests`, `.github`…, language-coloured files), change markers, clickable breadcrumbs, quick find, a file viewer with line numbers, and a File / Changes toggle for modified files. Right-click to create, rename or delete (deleted items go to the system trash).
+- **Sidebar:** local branches grouped into folders (`feature/`, `fix/`…), remotes grouped by remote, tags, and a filter box. Click a branch to show it in History; hover and press **Switch** (or double-click) to check it out; right-click for more.
+- **Branch switcher** (`Ctrl/⌘ B`, or click the branch in the toolbar): fuzzy search, most recently updated first, keyboard driven. Switching is instant in the UI while Git catches up, and typing a new name creates the branch.
+- **Create anything:** the **New** toolbar menu, right-click menus and the palette create branches (from HEAD, a branch, a tag or any commit), tags, files and folders; rename, delete and merge branches; stash and apply stashes; clone a repository or create a new one.
+- **AI assistant** (`Ctrl/⌘ J`): a chat panel that knows the repository state. Conversations are saved per repository (in the app data folder) and survive hiding the panel, switching tabs and restarting; start a **New chat**, reopen earlier ones from the list, or close a conversation to delete it. There is also **Generate** for commit messages, **Explain** for commits, and one-click "summarize my changes" / "review staged changes". See [AI providers](#ai-providers).
 - **Remote:** fetch (all remotes, prune), pull, and push. Push sets the upstream automatically on the first push.
 - **Command palette** (`Ctrl/⌘ K`): actions, branches and commit search.
 - **Settings** (`Ctrl/⌘ ,`): changes preview live and are saved locally.
   - *Appearance:* accent colour, glass level (frosted, clear or solid), background glow, density, interface size.
-  - *Typography:* interface and code fonts.
+  - *Typography:* title font (Red Hat Display by default, plus nine other sans-serif options), interface and code fonts.
   - *Layout:* sidebar side, commit details position, avatars, relative dates.
   - *Arrange:* drag and drop to reorder and show/hide sidebar sections, toolbar items and history columns.
+- **Adaptive layout:** works from a half-screen 680×480 window up to large monitors. On narrow windows the sidebar becomes an icon strip, toolbar labels turn into icons, history drops its least important columns, details stack vertically and the assistant floats over the content.
+- **Resizable panels:** drag the edge between any two panels (sidebar, file lists, file tree, commit details, assistant, and the history and staged/unstaged splits). Sizes are saved; double-click an edge to reset it, or use Settings → Layout → Reset sizes.
 - **Custom title bar:** native traffic lights on macOS, custom window controls on Windows and Linux.
 
 ### Keyboard shortcuts
@@ -92,9 +101,32 @@ URL parameters jump straight to a given state:
 | `Ctrl/⌘ ,`          | Settings                        |
 | `Ctrl/⌘ O`          | Open repository                 |
 | `Ctrl/⌘ R`          | Refresh                         |
-| `Ctrl/⌘ 1` / `2`    | Changes / History               |
+| `Ctrl/⌘ 1` / `2` / `3` | Changes / History / Files    |
+| `Ctrl/⌘ B`          | Switch branch                   |
+| `Ctrl/⌘ ⇧ B`        | New branch                      |
+| `Ctrl/⌘ J`          | AI assistant                    |
+| `Ctrl/⌘ \`          | Sidebar: full / icons only      |
 | `↑` `↓`             | Move through commits            |
 | `Ctrl/⌘ Enter`      | Commit                          |
+
+## AI providers
+
+Choose one in **Settings → AI assistant**. Orbe only contacts the provider when you ask it to, and sends
+the relevant diff, file names and recent commit subjects.
+
+| Provider              | Uses                                   | Setup                                                         |
+| --------------------- | -------------------------------------- | ------------------------------------------------------------- |
+| Claude API            | Anthropic API key, billed per use      | Paste a key from console.anthropic.com. Default model `claude-opus-5-5`. |
+| Claude Code           | Your Claude Pro / Max plan             | `npm install -g @anthropic-ai/claude-code`, then run `claude` once to sign in. |
+| OpenAI API            | OpenAI API key, billed per use         | Paste a key, then **Load models** and pick one.               |
+| Codex CLI             | Your ChatGPT plan                      | `npm install -g @openai/codex`, then `codex login`.           |
+| Local / compatible    | Any OpenAI-compatible server           | Ollama, LM Studio, OpenRouter… set the server address.        |
+
+API keys are stored in the operating system keychain (Windows Credential Manager, macOS Keychain,
+Linux Secret Service) by the Rust side (`src-tauri/src/ai.rs`); they never reach the webview or
+`localStorage`. CLI providers run with the repository as working directory, in read-only mode.
+
+Exposing Orbe itself as an MCP server, so tools like Claude Code can drive it, is on the roadmap.
 
 ## Architecture
 
@@ -107,6 +139,7 @@ URL parameters jump straight to a given state:
                                                    ▼  (or mock.ts in a browser)
 ┌──────────────────────── Rust core (src-tauri/) ────────────────────┐
 │  #[tauri::command] fns in git.rs  ──►  `git` CLI subprocess        │
+│                           ai.rs   ──►  HTTPS APIs / claude, codex  │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -143,19 +176,26 @@ src/
     api.ts                  typed bridge to Rust (+ browser mock fallback)
     mock.ts                 stateful demo repository for the browser preview
     state.svelte.ts         AppState + RepoTab
-    settings.svelte.ts      preferences, defaults, option lists
+    settings.svelte.ts      preferences, defaults, option lists, AI providers
+    ui.svelte.ts            context menus, form dialogs, floating panels
+    actions.ts              user flows: create/rename/delete dialogs and menus
+    assistant.svelte.ts     AI prompts and chat
     graph.ts                commit graph lane layout
     format.ts               dates, initials, avatar colours, platform helpers
     components/
       TitleBar, Toolbar, Sidebar          app chrome
       HistoryView, CommitList, CommitDetails
       ChangesView, FileList, DiffView
+      FilesView, FileViewer               whole-project tree
+      BranchSwitcher, ContextMenu, FormDialog
+      AssistantPanel, Markdown, AiSettings
       CommandPalette, SettingsPanel, Welcome, Toasts
       Sortable, SortableList              pointer-based drag and drop
       Switch, Segmented, Splitter, ...    small primitives
 src-tauri/
   src/lib.rs                command registration, window setup
-  src/git.rs                Git commands exposed to the UI
+  src/git.rs                Git and file commands exposed to the UI
+  src/ai.rs                 AI providers and keychain storage
   tauri.conf.json           window, bundle and app identifier (app.orbe.desktop)
   capabilities/default.json permissions the frontend is allowed to use
   icons/                    generated app icons
@@ -244,8 +284,10 @@ and uploads the bundles as artifacts. Release signing and notarization aren't se
 Rough priorities. Nothing here is committed to yet.
 
 - [ ] Line- and hunk-level staging in the diff view
-- [ ] Stash: create, apply, pop, drop, with a sidebar section
-- [ ] Branch management: create, rename, delete, and merge or rebase from the sidebar
+- [ ] Stash list in the sidebar (create and apply are done)
+- [ ] Rebase and cherry-pick from the sidebar and history
+- [ ] Orbe as an MCP server, so AI tools can drive it
+- [ ] Streaming AI replies
 - [ ] Conflict resolution view
 - [ ] File-system watcher instead of refresh-on-focus
 - [ ] Credential handling for HTTPS/SSH push and pull (prompts are currently disabled)

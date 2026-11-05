@@ -6,6 +6,8 @@
   import type { Commit } from "../api";
   import type { GraphRow } from "../graph";
   import Avatar from "./Avatar.svelte";
+  import { ui } from "../ui.svelte";
+  import { commitMenu } from "../actions";
 
   const ROW = $derived(settings.rowHeight);
   const LANE = 16;
@@ -22,13 +24,24 @@
   const total = $derived(app.commits.length);
   const start = $derived(Math.max(0, Math.floor(scrollTop / ROW) - OVERSCAN));
   const end = $derived(Math.min(total, Math.ceil((scrollTop + height) / ROW) + OVERSCAN));
-  const columns = $derived(settings.value.columns.filter((c) => c.visible).map((c) => c.id));
-  // Narrower metadata columns when the details panel sits beside the list.
+  let listWidth = $state(1000);
+  // Narrower metadata columns when space is tight.
   const WIDTHS = $derived<Record<Exclude<ColumnId, "graph" | "description">, string>>(
-    settings.value.detailsPosition === "right"
+    listWidth < 1000 || settings.value.detailsPosition === "right"
       ? { author: "150px", date: "104px", hash: "76px" }
       : { author: "190px", date: "130px", hash: "88px" },
   );
+  /** Keep the description readable: drop the least important columns first when narrow. */
+  const MIN_DESCRIPTION = 280;
+  const columns = $derived.by<ColumnId[]>(() => {
+    let cols = settings.value.columns.filter((c) => c.visible).map((c) => c.id);
+    const px = (id: ColumnId) => (id === "graph" ? graphWidth : id === "description" ? 0 : parseInt(WIDTHS[id]));
+    for (const drop of ["hash", "date", "author"] as const) {
+      if (listWidth - cols.reduce((sum, id) => sum + px(id), 0) >= MIN_DESCRIPTION) break;
+      cols = cols.filter((c) => c !== drop);
+    }
+    return cols;
+  });
   const template = $derived(
     columns
       .map((id) => (id === "graph" ? `${graphWidth}px` : id === "description" ? "minmax(0, 1fr)" : WIDTHS[id]))
@@ -175,7 +188,7 @@
   {/if}
 {/snippet}
 
-<div class="flex h-full min-h-0 flex-col">
+<div class="flex h-full min-h-0 flex-col" bind:clientWidth={listWidth}>
   <div
     class="grid h-9 shrink-0 items-center border-b border-line-soft text-[11px] font-semibold tracking-[0.06em] text-fg-faint uppercase"
     style:grid-template-columns={template}
@@ -217,6 +230,7 @@
           style:height="{ROW}px"
           style:grid-template-columns={template}
           onclick={() => select(c.hash)}
+          oncontextmenu={(e) => (select(c.hash), ui.menuAt(e, commitMenu(c)))}
           onkeydown={() => {}}
         >
           {#if selected}
