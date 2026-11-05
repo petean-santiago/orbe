@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b0f36"/>
+      <stop offset="1" stop-color="#0d0612"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="512" r="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e879f9" stop-opacity="0.5"/>
+      <stop offset="0.6" stop-color="#c026d3" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#c026d3" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb" cx="0.36" cy="0.3" r="0.78">
+      <stop offset="0" stop-color="#fdf0ff"/>
+      <stop offset="0.2" stop-color="#f0abfc"/>
+      <stop offset="0.52" stop-color="#d946ef"/>
+      <stop offset="0.82" stop-color="#86198f"/>
+      <stop offset="1" stop-color="#3b0640"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f5d0fe"/>
+      <stop offset="0.5" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f0abfc"/>
+    </linearGradient>
+    <clipPath id="back"><rect x="-520" y="-320" width="1040" height="320"/></clipPath>
+    <clipPath id="front"><rect x="-520" y="0" width="1040" height="320"/></clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="440" fill="url(#glow)"/>
+
+  <!-- orbit, back half (behind the orb) -->
+  <g transform="translate(512 512) rotate(-22)">
+    <ellipse rx="392" ry="120" fill="none" stroke="url(#ring)" stroke-width="24" opacity="0.4" clip-path="url(#back)"/>
+  </g>
+
+  <!-- the orb -->
+  <circle cx="512" cy="512" r="232" fill="url(#orb)"/>
+  <ellipse cx="452" cy="418" rx="86" ry="52" fill="#ffffff" opacity="0.22" transform="rotate(-30 452 418)"/>
+
+  <!-- orbit, front half, with commit nodes -->
+  <g transform="translate(512 512) rotate(-22)">
+    <ellipse rx="392" ry="120" fill="none" stroke="url(#ring)" stroke-width="24" clip-path="url(#front)"/>
+    <circle cx="-321" cy="69" r="40" fill="#1c0a22" stroke="#ffffff" stroke-width="18"/>
+    <circle cx="0" cy="120" r="46" fill="#f0abfc" stroke="#ffffff" stroke-width="18"/>
+    <circle cx="321" cy="69" r="40" fill="#1c0a22" stroke="#ffffff" stroke-width="18"/>
+  </g>
+</svg>
