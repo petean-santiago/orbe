@@ -108,30 +108,33 @@
     : `min(${settings.value.sizes.assistant}px, 45vw)`}
   transition:fly={{ x: fromLeft ? -16 : 16, duration: 180 }}
 >
-  <header class="flex h-12 shrink-0 items-center gap-2.5 border-b border-line-soft pr-2 pl-4">
-    <span class="flex size-7 items-center justify-center rounded-lg bg-accent-soft text-accent shadow-[0_0_18px_-4px_var(--color-accent-glow)]">
-      <Sparkles size={15} />
+  <header class="flex h-[60px] shrink-0 items-center gap-3 border-b border-line-soft pr-2.5 pl-4">
+    <span class="flex size-8 shrink-0 items-center justify-center rounded-xl bg-accent-soft text-accent shadow-[0_0_18px_-4px_var(--color-accent-glow)]">
+      <Sparkles size={16} />
     </span>
-    <div class="min-w-0 flex-1 leading-tight">
+    <div class="flex min-w-0 flex-1 flex-col items-start gap-0.5">
       <button
-        class="flex max-w-full items-center gap-1 text-[13.5px] font-semibold text-fg hover:text-accent-fg"
+        class="flex max-w-full items-center gap-1.5 text-left text-[13.5px] leading-5 font-semibold text-fg transition-colors hover:text-accent-fg"
         title="Your conversations"
         onclick={() => (showList = !showList)}
       >
         <span class="truncate">{showList ? "Conversations" : (tab.activeChat?.title ?? "New chat")}</span>
-        <ChevronDown size={13} class={["shrink-0 opacity-60 transition-transform", showList && "rotate-180"]} />
+        <ChevronDown size={14} class={["shrink-0 opacity-60 transition-transform", showList && "rotate-180"]} />
       </button>
-      <button class="max-w-full truncate text-[11.5px] text-fg-faint hover:text-fg-muted" onclick={openSettings} title="Change provider">
+      <button class="max-w-full truncate text-left text-[11.5px] leading-4 text-fg-faint transition-colors hover:text-fg-muted" onclick={openSettings} title="Change provider">
         {providerLabel()}
       </button>
     </div>
-    <button class="icon-btn size-7" title="New chat" onclick={startNew}><SquarePen size={14} /></button>
-    {#if tab.activeChat && !showList}
-      <button class="icon-btn size-7" title="Close this conversation" onclick={() => closeConversation(tab.activeChat!.id, tab.activeChat!.title)}>
-        <X size={15} />
-      </button>
-    {/if}
-    <button class="icon-btn size-7" title="Hide panel (your conversation is kept)" onclick={() => (ui.assistant = false)}><PanelRightClose size={15} /></button>
+    <div class="flex shrink-0 items-center gap-0.5">
+      <button class="icon-btn size-8" title="New chat" onclick={startNew}><SquarePen size={15} /></button>
+      {#if tab.activeChat && !showList}
+        <button class="icon-btn size-8" title="Close this conversation" onclick={() => closeConversation(tab.activeChat!.id, tab.activeChat!.title)}>
+          <X size={16} />
+        </button>
+      {/if}
+      <span class="mx-1 h-5 w-px bg-line-soft"></span>
+      <button class="icon-btn size-8" title="Hide panel (your conversation is kept)" onclick={() => (ui.assistant = false)}><PanelRightClose size={16} /></button>
+    </div>
   </header>
 
   {#if !aiReady()}

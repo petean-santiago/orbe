@@ -11,6 +11,10 @@
   import ContextMenu from "./lib/components/ContextMenu.svelte";
   import FilesView from "./lib/components/FilesView.svelte";
   import FormDialog from "./lib/components/FormDialog.svelte";
+  import BranchDragGhost from "./lib/components/BranchDragGhost.svelte";
+  import OperationBanner from "./lib/components/OperationBanner.svelte";
+  import DetachedBanner from "./lib/components/DetachedBanner.svelte";
+  import { branchDrag } from "./lib/branchDrag.svelte";
   import ChangesView from "./lib/components/ChangesView.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import HistoryView from "./lib/components/HistoryView.svelte";
@@ -101,6 +105,19 @@
     }
   })();
 
+  // Fetch in the background so "to pull" counts stay current.
+  $effect(() => {
+    const minutes = settings.value.autoFetch;
+    if (!minutes || !isTauri) return;
+    const run = () => app.tabs.forEach((t) => t.repo && t.backgroundFetch());
+    const first = setTimeout(run, 20_000); // shortly after launch
+    const every = setInterval(run, minutes * 60_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
+  });
+
   // Pick up changes made outside Orbe (editor, terminal) when the window regains focus.
   function onFocus() {
     if (app.repo) app.refresh();
@@ -119,6 +136,11 @@
   {#key app.activeId}
     {#if app.repo}
       <Toolbar />
+      {#if app.active.operation}
+        <OperationBanner />
+      {:else if app.active.detached}
+        <DetachedBanner />
+      {/if}
       <div
         class={["relative flex min-h-0 flex-1 gap-2 px-2 pb-2", settings.value.sidebarSide === "right" && "flex-row-reverse"]}
         in:fade={{ duration: 160 }}
@@ -165,6 +187,10 @@
   {#key ui.form}
     <FormDialog />
   {/key}
+{/if}
+
+{#if branchDrag.source}
+  <BranchDragGhost />
 {/if}
 
 {#if ui.menu}

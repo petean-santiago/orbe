@@ -15,10 +15,12 @@ import {
   FolderPlus,
   GitBranchPlus,
   GitMerge,
+  History,
   Pencil,
   Sparkles,
   Tag,
   Trash2,
+  X,
 } from "@lucide/svelte";
 import { confirmAction, type Branch, type Commit, type TreeEntry } from "./api";
 import { isMac, pathError, refNameError } from "./format";
@@ -327,10 +329,47 @@ export function branchMenu(b: Branch): MenuItem[] {
   return items;
 }
 
+/** Local branches whose tip is this commit (other than the current one). */
+function branchesAt(c: Commit) {
+  return app.branches.filter(
+    (b) => b.kind === "local" && !b.isHead && c.refs.some((r) => r === b.name || r === `HEAD -> ${b.name}`),
+  );
+}
+
+/** Double-click on a commit: go back to it, like other Git clients. */
+export function checkoutMenu(c: Commit): MenuItem[] {
+  const isHere = app.active.headCommit?.hash === c.hash;
+  const items: MenuItem[] = [{ header: `${c.shortHash}  ·  ${c.subject.length > 42 ? c.subject.slice(0, 40) + "…" : c.subject}` }];
+  for (const b of branchesAt(c).slice(0, 3)) {
+    items.push({ label: `Switch to ${b.name}`, icon: ArrowRightLeft, run: () => app.checkout(b) });
+  }
+  items.push({
+    label: isHere ? "You're on this commit" : "Check out this commit",
+    icon: History,
+    hint: isHere ? undefined : "detached HEAD",
+    disabled: isHere,
+    run: () => app.active.checkoutCommit(c),
+  });
+  items.push({
+    label: "New branch here and switch…",
+    icon: GitBranchPlus,
+    run: () => newBranch({ ref: c.hash, label: `commit ${c.shortHash}` }),
+  });
+  items.push({ separator: true }, { label: "Cancel", icon: X, run: () => {} });
+  return items;
+}
+
 export function commitMenu(c: Commit): MenuItem[] {
   const ref = { ref: c.hash, label: `commit ${c.shortHash}` };
   return [
     { header: c.shortHash },
+    {
+      label: "Check out this commit",
+      icon: History,
+      hint: "detached",
+      disabled: app.active.headCommit?.hash === c.hash,
+      run: () => app.active.checkoutCommit(c),
+    },
     { label: "New branch here…", icon: GitBranchPlus, run: () => newBranch(ref) },
     { label: "New tag here…", icon: Tag, run: () => newTag(ref) },
     { label: "Explain with AI", icon: Sparkles, run: () => explainCommit(app.active, c) },

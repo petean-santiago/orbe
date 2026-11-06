@@ -347,8 +347,10 @@ pub async fn get_file_diff(
     file: String,
     staged: bool,
     untracked: bool,
+    ignore_whitespace: Option<bool>,
 ) -> CmdResult<String> {
     blocking(move || {
+        let ws = ignore_whitespace.unwrap_or(false);
         if untracked {
             // Exit code 1 just means "there are differences".
             return run_git_allow(
@@ -358,6 +360,9 @@ pub async fn get_file_diff(
             );
         }
         let mut args = vec!["diff", "--no-ext-diff", "-M"];
+        if ws {
+            args.push("-w");
+        }
         if staged {
             args.push("--cached");
         }
@@ -418,8 +423,10 @@ pub async fn get_commit_file_diff(
     hash: String,
     file: String,
     old_path: Option<String>,
+    ignore_whitespace: Option<bool>,
 ) -> CmdResult<String> {
     blocking(move || {
+        let ws = ignore_whitespace.unwrap_or(false);
         let mut pathspec = vec![file.clone()];
         if let Some(old) = old_path {
             pathspec.push(old);
@@ -435,6 +442,9 @@ pub async fn get_commit_file_diff(
                 hash.clone(),
             ],
         };
+        if ws {
+            args.insert(2, "-w".into());
+        }
         args.push("--".into());
         args.extend(pathspec);
 
@@ -878,4 +888,178 @@ pub async fn delete_path(path: String, target: String) -> CmdResult<()> {
         trash::delete(&full).map_err(|e| format!("Couldn't move {target} to the trash: {e}"))
     })
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Merge / rebase (drag a branch onto another) and in-progress operations
+// ---------------------------------------------------------------------------
+
+/// The repository's .git directory, absolute.
+fn git_dir(repo: &str) -> CmdResult<PathBuf> {
+    Ok(PathBuf::from(run_git(repo, &["rev-parse", "--absolute-git-dir"])?.trim()))
+}
+
+/// "merge", "rebase", "cherry-pick" or "revert" while one is stopped half-way.
+fn current_operation(repo: &str) -> CmdResult<Option<&'static str>> {
+    let dir = git_dir(repo)?;
+    Ok(if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
+        Some("rebase")
+    } else if dir.join("MERGE_HEAD").exists() {
+        Some("merge")
+    } else if dir.join("CHERRY_PICK_HEAD").exists() {
+        Some("cherry-pick")
+    } else if dir.join("REVERT_HEAD").exists() {
+        Some("revert")
+    } else {
+        None
+    })
+}
+
+fn current_branch(repo: &str) -> CmdResult<String> {
+    Ok(run_git_allow(repo, &["symbolic-ref", "--short", "-q", "HEAD"], &[0, 1])?
+        .trim()
+        .to_string())
+}
+
+/// Run a git command that may want an editor (continue a rebase, finish a
+/// merge) without ever opening one: the default message is accepted.
+fn run_git_no_editor(repo: &str, args: &[&str]) -> CmdResult<String> {
+    let output = git_command(repo)
+        .env("GIT_EDITOR", "true")
+        .args(args)
+        .output()
+        .map_err(|e| format!("Could not run git ({e})."))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let mut msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if msg.is_empty() {
+        msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    }
+    Err(msg)
+}
+
+/// Merge `source` into `target`, switching to `target` first if needed.
+/// Resolves to "merged", or "conflicts" when git stopped for you to resolve them.
+#[tauri::command]
+pub async fn merge_into(path: String, source: String, target: String) -> CmdResult<String> {
+    blocking(move || {
+        if current_branch(&path)? != target {
+            run_git(&path, &["switch", &target])?;
+        }
+        match run_git(&path, &["merge", "--no-edit", &source]) {
+            Ok(_) => Ok("merged".into()),
+            Err(e) => {
+                if current_operation(&path)? == Some("merge") {
+                    Ok("conflicts".into())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    })
+    .await
+}
+
+/// Replay `branch` on top of `onto`. Resolves to "rebased" or "conflicts".
+#[tauri::command]
+pub async fn rebase_onto(path: String, branch: String, onto: String) -> CmdResult<String> {
+    blocking(move || match run_git_no_editor(&path, &["rebase", &onto, &branch]) {
+        Ok(_) => Ok("rebased".into()),
+        Err(e) => {
+            if current_operation(&path)? == Some("rebase") {
+                Ok("conflicts".into())
+            } else {
+                Err(e)
+            }
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn repo_operation(path: String) -> CmdResult<Option<String>> {
+    blocking(move || Ok(current_operation(&path)?.map(str::to_string))).await
+}
+
+/// Continue the stopped operation once conflicts are resolved and staged.
+#[tauri::command]
+pub async fn continue_operation(path: String) -> CmdResult<()> {
+    blocking(move || {
+        let args: &[&str] = match current_operation(&path)? {
+            Some("rebase") => &["rebase", "--continue"],
+            Some("merge") => &["commit", "--no-edit"],
+            Some("cherry-pick") => &["cherry-pick", "--continue"],
+            Some("revert") => &["revert", "--continue"],
+            _ => return Err("There is nothing to continue.".into()),
+        };
+        run_git_no_editor(&path, args).map(|_| ())
+    })
+    .await
+}
+
+/// Abandon the stopped operation and go back to how things were before it.
+#[tauri::command]
+pub async fn abort_operation(path: String) -> CmdResult<()> {
+    blocking(move || {
+        let op = current_operation(&path)?.ok_or_else(|| "There is nothing to abort.".to_string())?;
+        run_git(&path, &[op, "--abort"]).map(|_| ())
+    })
+    .await
+}
+
+/// Largest file we'll send to the UI for previewing (images, PDFs).
+const MAX_PREVIEW_BYTES: u64 = 40 * 1024 * 1024;
+
+/// A file's raw bytes, base64-encoded, for image and PDF previews.
+#[tauri::command]
+pub async fn read_file_base64(path: String, file: String) -> CmdResult<String> {
+    use base64::Engine as _;
+    blocking(move || {
+        let full = safe_join(&path, &file)?;
+        let size = fs::metadata(&full).map_err(|e| e.to_string())?.len();
+        if size > MAX_PREVIEW_BYTES {
+            return Err(format!(
+                "This file is {} MB, too large to preview.",
+                size / (1024 * 1024)
+            ));
+        }
+        let bytes = fs::read(&full).map_err(|e| e.to_string())?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+}
+
+/// Bytes of a file at a given version, base64-encoded, for image diffs.
+/// `spec` is a git object name: "HEAD:img.png" (last commit), ":img.png"
+/// (staged), "<hash>:img.png" or "<hash>^:img.png" (a commit / its parent).
+#[tauri::command]
+pub async fn read_blob_base64(path: String, spec: String) -> CmdResult<String> {
+    use base64::Engine as _;
+    blocking(move || {
+        let size: u64 = run_git(&path, &["cat-file", "-s", &spec])
+            .map_err(|_| "This version of the file doesn't exist.".to_string())?
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        if size > MAX_PREVIEW_BYTES {
+            return Err(format!("This file is {} MB, too large to preview.", size / (1024 * 1024)));
+        }
+        // Raw bytes: don't go through run_git, which decodes output as text.
+        let output = git_command(&path)
+            .args(["cat-file", "blob", &spec])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(base64::engine::general_purpose::STANDARD.encode(output.stdout))
+    })
+    .await
+}
+
+/// Check out a commit directly ("detached HEAD"), to look at the project as it was.
+#[tauri::command]
+pub async fn checkout_commit(path: String, hash: String) -> CmdResult<()> {
+    blocking(move || run_git(&path, &["switch", "--detach", &hash]).map(|_| ())).await
 }

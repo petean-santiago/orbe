@@ -27,7 +27,7 @@
 
   <div class="relative flex w-[440px] animate-fade-in flex-col items-center">
     <div class="animate-float">
-      <Logo size={132} glow />
+      <Logo size={132} glow animated />
     </div>
     <h1 class="mt-6 bg-gradient-to-b from-white via-white to-accent bg-clip-text font-display text-[40px] font-semibold tracking-[-0.04em] text-transparent">
       Orbe

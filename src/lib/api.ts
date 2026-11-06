@@ -53,6 +53,9 @@ export interface Branch {
   updated: number;
 }
 
+/** A git operation stopped half-way, usually for conflicts. */
+export type RepoOperation = "merge" | "rebase" | "cherry-pick" | "revert";
+
 export interface TreeEntry {
   path: string;
   dir: boolean;
@@ -90,11 +93,13 @@ export const git = {
   status: (path: string) => call<FileChange[]>("get_status", { path }),
   log: (path: string, limit = 2000) => call<Commit[]>("get_log", { path, limit }),
   branches: (path: string) => call<Branch[]>("get_branches", { path }),
-  fileDiff: (path: string, file: string, staged: boolean, untracked: boolean) =>
-    call<string>("get_file_diff", { path, file, staged, untracked }),
+  fileDiff: (path: string, file: string, staged: boolean, untracked: boolean, ignoreWhitespace = false) =>
+    call<string>("get_file_diff", { path, file, staged, untracked, ignoreWhitespace }),
   commitFiles: (path: string, hash: string) => call<FileChange[]>("get_commit_files", { path, hash }),
-  commitFileDiff: (path: string, hash: string, file: string, oldPath: string | null) =>
-    call<string>("get_commit_file_diff", { path, hash, file, oldPath }),
+  commitFileDiff: (path: string, hash: string, file: string, oldPath: string | null, ignoreWhitespace = false) =>
+    call<string>("get_commit_file_diff", { path, hash, file, oldPath, ignoreWhitespace }),
+  /** A file at a given version ("HEAD:a.png", ":a.png" staged, "<hash>:a.png"), base64. */
+  blobBase64: (path: string, spec: string) => call<string>("read_blob_base64", { path, spec }),
   stage: (path: string, files: string[]) => call<void>("stage_files", { path, files }),
   unstage: (path: string, files: string[]) => call<void>("unstage_files", { path, files }),
   discard: (path: string, tracked: string[], untracked: string[]) =>
@@ -103,6 +108,8 @@ export const git = {
     call<string>("commit", { path, message, amend }),
   checkout: (path: string, name: string, remote: boolean) =>
     call<void>("checkout_branch", { path, name, remote }),
+  /** Check out a commit directly (detached HEAD). */
+  checkoutCommit: (path: string, hash: string) => call<void>("checkout_commit", { path, hash }),
   fetch: (path: string) => call<void>("fetch", { path }),
   pull: (path: string) => call<void>("pull", { path }),
   push: (path: string) => call<void>("push", { path }),
@@ -113,6 +120,13 @@ export const git = {
   deleteBranch: (path: string, name: string, force: boolean) => call<void>("delete_branch", { path, name, force }),
   deleteRemoteBranch: (path: string, name: string) => call<void>("delete_remote_branch", { path, name }),
   merge: (path: string, name: string) => call<void>("merge_branch", { path, name }),
+  /** Resolves to "merged" or "conflicts". */
+  mergeInto: (path: string, source: string, target: string) => call<"merged" | "conflicts">("merge_into", { path, source, target }),
+  /** Resolves to "rebased" or "conflicts". */
+  rebaseOnto: (path: string, branch: string, onto: string) => call<"rebased" | "conflicts">("rebase_onto", { path, branch, onto }),
+  operation: (path: string) => call<RepoOperation | null>("repo_operation", { path }),
+  continueOperation: (path: string) => call<void>("continue_operation", { path }),
+  abortOperation: (path: string) => call<void>("abort_operation", { path }),
   createTag: (path: string, name: string, target: string | null, message: string | null) =>
     call<void>("create_tag", { path, name, target, message }),
   deleteTag: (path: string, name: string) => call<void>("delete_tag", { path, name }),
@@ -129,6 +143,8 @@ export const git = {
 
   tree: (path: string) => call<TreeEntry[]>("list_tree", { path }),
   readFile: (path: string, file: string) => call<FileContent>("read_file", { path, file }),
+  /** Raw bytes as base64, for previewing images and PDFs. */
+  readFileBase64: (path: string, file: string) => call<string>("read_file_base64", { path, file }),
   createFile: (path: string, file: string) => call<void>("create_file", { path, file }),
   createFolder: (path: string, folder: string) => call<void>("create_folder", { path, folder }),
   renamePath: (path: string, from: string, to: string) => call<void>("rename_path", { path, from, to }),

@@ -1,21 +1,43 @@
 <script lang="ts">
-  import { Check, ChevronRight, Copy, FileDiff, FileText } from "@lucide/svelte";
+  import { Check, ChevronRight, Code, Copy, Eye, FileDiff } from "@lucide/svelte";
   import { git, type FileContent, type FileStatus } from "../api";
   import { app } from "../state.svelte";
   import { formatBytes } from "../format";
   import { isBold, isItalic, languageFor, tokenize, type ThemedToken } from "../highlight";
   import DiffView from "./DiffView.svelte";
+  import ImageDiff from "./ImageDiff.svelte";
+  import { isImage, worktreeImage } from "../imageDiff";
+  import { settings } from "../settings.svelte";
   import FileIcon from "./FileIcon.svelte";
   import FolderIcon from "./FolderIcon.svelte";
   import Segmented from "./Segmented.svelte";
   import StatusBadge from "./StatusBadge.svelte";
+  import ImagePreview from "./ImagePreview.svelte";
+  import MarkdownPreview from "./MarkdownPreview.svelte";
+  import PdfPreview from "./PdfPreview.svelte";
 
   let { path, status }: { path: string; status: FileStatus | null } = $props();
 
   let content = $state<FileContent | null>(null);
   let tokens = $state.raw<ThemedToken[][] | null>(null);
   let error = $state<string | null>(null);
-  let mode = $state<"file" | "diff">("file");
+  /** Files that can be shown rendered, not just as text. */
+  const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "apng", "tif", "tiff"]);
+  const ext = $derived(path.split(".").pop()!.toLowerCase());
+  const previewKind = $derived<"image" | "svg" | "pdf" | "markdown" | null>(
+    IMAGE_EXT.has(ext) ? "image" : ext === "svg" ? "svg" : ext === "pdf" ? "pdf" : ["md", "markdown", "mdx"].includes(ext) ? "markdown" : null,
+  );
+
+  // svelte-ignore state_referenced_locally
+  let mode = $state<"preview" | "file" | "diff">(previewKind ? "preview" : "file");
+
+  const modes = $derived.by(() => {
+    const out: { value: "preview" | "file" | "diff"; label: string; icon: typeof Eye }[] = [];
+    if (previewKind) out.push({ value: "preview", label: "Preview", icon: Eye });
+    out.push({ value: "file", label: "Code", icon: Code });
+    if (status) out.push({ value: "diff", label: "Changes", icon: FileDiff });
+    return out;
+  });
   let diff = $state<string | null>(null);
   let copied = $state(false);
 
@@ -52,14 +74,14 @@
     if (!change) return;
     let cancelled = false;
     git
-      .fileDiff(repo.path, path, change.staged, change.status === "untracked")
+      .fileDiff(repo.path, path, change.staged, change.status === "untracked", settings.value.diffIgnoreWhitespace)
       .then((d) => !cancelled && (diff = d))
       .catch((e) => !cancelled && (diff = String(e)));
     return () => (cancelled = true);
   });
 
   $effect(() => {
-    if (!status) mode = "file";
+    if (!status && mode === "diff") mode = previewKind ? "preview" : "file";
   });
 
   async function copyPath() {
@@ -102,14 +124,8 @@
       <span class="hidden rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-fg-faint lg:inline">{language}</span>
     {/if}
     {#if content}<span class="text-[11.5px] text-fg-faint tabular-nums">{formatBytes(content.size)}</span>{/if}
-    {#if status}
-      <Segmented
-        bind:value={mode}
-        options={[
-          { value: "file", label: "File", icon: FileText },
-          { value: "diff", label: "Changes", icon: FileDiff },
-        ]}
-      />
+    {#if modes.length > 1}
+      <Segmented bind:value={mode} options={modes} />
     {/if}
     <button class="icon-btn size-7" title="Copy path" onclick={copyPath}>
       {#if copied}<Check size={14} class="text-added" />{:else}<Copy size={14} />{/if}
@@ -118,7 +134,21 @@
 
   <div class="min-h-0 flex-1">
     {#if mode === "diff"}
-      <DiffView {diff} {path} loading={diff === null} />
+      {@const change = app.status.find((s) => s.path === path && !s.staged) ?? app.status.find((s) => s.path === path)}
+      {#if change && app.repo && isImage(path)}
+        {@const img = worktreeImage(app.repo.path, change)}
+        <ImageDiff {path} before={img.before} after={img.after} />
+      {:else}
+        <DiffView {diff} {path} loading={diff === null} />
+      {/if}
+    {:else if mode === "preview" && previewKind === "image"}
+      <ImagePreview {path} size={content?.size ?? 0} />
+    {:else if mode === "preview" && previewKind === "pdf"}
+      <PdfPreview {path} />
+    {:else if mode === "preview" && previewKind === "svg" && content?.text}
+      <ImagePreview {path} svgText={content.text} size={content.size} />
+    {:else if mode === "preview" && previewKind === "markdown" && content?.text != null}
+      <MarkdownPreview text={content.text} {path} />
     {:else if error}
       <div class="flex h-full items-center justify-center px-8 text-center text-[13px] text-fg-faint">{error}</div>
     {:else if !content}

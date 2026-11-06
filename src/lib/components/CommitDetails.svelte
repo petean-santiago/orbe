@@ -1,16 +1,21 @@
 <script lang="ts">
-  import { Check, Copy, GitCommitHorizontal, GitMerge, Sparkles } from "@lucide/svelte";
+  import { Check, Copy, GitCommitHorizontal, GitMerge, Sparkles, X } from "@lucide/svelte";
   import { explainCommit } from "../assistant.svelte";
   import { git, type Commit, type FileChange } from "../api";
   import { app } from "../state.svelte";
   import { fullDate, relativeTime } from "../format";
   import Avatar from "./Avatar.svelte";
   import DiffView from "./DiffView.svelte";
+  import ImageDiff from "./ImageDiff.svelte";
+  import { commitImage, isImage } from "../imageDiff";
   import FileList from "./FileList.svelte";
   import Resizer from "./Resizer.svelte";
   import { settings, DEFAULT_SIZES } from "../settings.svelte";
 
-  let { commit, stacked = false }: { commit: Commit; stacked?: boolean } = $props();
+  let { commit, stacked = false, onclose }: { commit: Commit; stacked?: boolean; onclose?: () => void } = $props();
+
+  /** Closing clears the selection; the history then takes all the room. */
+  const close = () => (onclose ? onclose() : (app.selectedHash = null));
 
   let width = $state(1000);
   // Too narrow for the info column beside the diff: stack them.
@@ -46,7 +51,7 @@
     let cancelled = false;
     loadingDiff = true;
     git
-      .commitFileDiff(repo.path, hash, file.path, file.oldPath)
+      .commitFileDiff(repo.path, hash, file.path, file.oldPath, settings.value.diffIgnoreWhitespace)
       .then((d) => !cancelled && (diff = d))
       .catch((e) => !cancelled && (diff = String(e)))
       .finally(() => !cancelled && (loadingDiff = false));
@@ -69,8 +74,16 @@
     class={["flex shrink-0 flex-col border-line-soft", vertical ? "max-h-[45%] border-b" : "border-r"]}
     style:width={vertical ? undefined : `min(${settings.value.sizes.commitInfo}px, 55%)`}
   >
-    <div class="animate-fade-in border-b border-line-soft px-5 py-4">
-      <h2 class="selectable font-display text-[17px] leading-snug text-fg">{commit.subject}</h2>
+    <div class="relative animate-fade-in border-b border-line-soft px-5 py-4">
+      <button
+        class="absolute top-3 right-3 flex size-8 items-center justify-center rounded-lg border border-line bg-surface-2 text-fg-muted transition-colors hover:border-accent/50 hover:bg-accent-soft hover:text-fg"
+        title="Close details (Esc)"
+        aria-label="Close details"
+        onclick={close}
+      >
+        <X size={16} strokeWidth={2.2} />
+      </button>
+      <h2 class="selectable pr-10 font-display text-[17px] leading-snug text-fg">{commit.subject}</h2>
       <div class="mt-3 flex items-center gap-2.5">
         <Avatar name={commit.author} email={commit.email} size={28} />
         <div class="min-w-0 leading-tight">
@@ -123,6 +136,13 @@
     <Resizer bind:value={settings.value.sizes.commitInfo} min={240} max={600} initial={DEFAULT_SIZES.commitInfo} label="Resize commit details" />
   {/if}
   <div class="min-h-0 min-w-0 flex-1">
-    <DiffView diff={selected ? diff : null} path={selected?.path ?? null} loading={loadingDiff} />
+    {#if selected && app.repo && isImage(selected.path)}
+      {@const img = commitImage(app.repo.path, commit, selected)}
+      {#key selected.path}
+        <ImageDiff path={selected.path} before={img.before} after={img.after} />
+      {/key}
+    {:else}
+      <DiffView diff={selected ? diff : null} path={selected?.path ?? null} loading={loadingDiff} />
+    {/if}
   </div>
 </div>

@@ -1,6 +1,9 @@
 <script lang="ts">
   import {
+    ArrowDown,
     ArrowRightLeft,
+    ArrowUp,
+    RefreshCw,
     ChevronRight,
     Cloud,
     FileDiff,
@@ -25,11 +28,18 @@
   import { settings } from "../settings.svelte";
   import { ui } from "../ui.svelte";
   import { branchMenu, newBranch, newTag } from "../actions";
+  import { branchDrag, isDropTarget, startBranchDrag } from "../branchDrag.svelte";
 
   type SectionKey = "local" | "remote" | "tags";
 
   /** Icons-only rail: chosen explicitly, or automatic on narrow windows. */
   const rail = $derived(ui.sidebarRail);
+  /** Local branches with commits waiting on their upstream. */
+  const toPull = $derived(app.branches.filter((b) => b.kind === "local" && b.behind > 0).length);
+  const ago = (ms: number) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+  };
   const onRight = $derived(settings.value.sidebarSide === "right");
 
   function toggleRail() {
@@ -102,20 +112,31 @@
 {#snippet branchRow(b: Branch, label: string, Icon: typeof GitBranch, indent: boolean)}
   {@const pending = app.active.pendingCheckout === b.name}
   {@const isRevealed = revealed === b.kind + b.name}
+  {@const dropping = isDropTarget(b.name) && b.kind === "local"}
+  {@const dragged = branchDrag.source?.name === b.name && branchDrag.source?.kind === b.kind}
   <li>
     <div
       role="button"
       tabindex="0"
+      data-branch-drop={b.kind === "local" ? b.name : undefined}
       class={[
         "group relative flex h-8 w-full cursor-default items-center gap-2.5 rounded-md pr-1.5 text-left text-[13px] transition-colors",
         indent ? "pl-7" : "pl-2.5",
-        b.isHead ? "bg-surface-2 text-fg" : isRevealed ? "bg-surface-2/60 text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
+        dropping
+          ? "bg-accent-soft text-fg ring-1 ring-accent/70 ring-inset"
+          : b.isHead
+            ? "bg-surface-2 text-fg"
+            : isRevealed
+              ? "bg-surface-2/60 text-fg"
+              : "text-fg-muted hover:bg-surface-2 hover:text-fg",
+        dragged && "opacity-45",
       ]}
       title={b.kind === "tag"
         ? `${b.name}: click to show, right-click for actions`
         : b.isHead
-          ? `${b.name} (current branch)`
-          : `${b.name}: click to show, double-click to switch, right-click for actions`}
+          ? `${b.name} (current branch). Drag onto another branch to merge or rebase`
+          : `${b.name}: click to show, double-click to switch, drag onto another branch to merge`}
+      onpointerdown={(e) => startBranchDrag(e, b)}
       onclick={() => reveal(b)}
       ondblclick={() => b.kind !== "tag" && app.checkout(b)}
       onkeydown={(e) => e.key === "Enter" && reveal(b)}
@@ -128,14 +149,26 @@
       {/if}
       <span class="min-w-0 flex-1 truncate">{label}</span>
       {#if b.behind > 0}
-        <span class="text-[11px] text-fg-faint tabular-nums group-hover:hidden">↓{b.behind}</span>
+        <span
+          class={["sync-pill sync-behind", !b.isHead && "group-hover:hidden"]}
+          title="{b.behind} commit{b.behind === 1 ? '' : 's'} on {b.upstream ?? 'the remote'} you haven't pulled yet"
+        >
+          <ArrowDown size={10} strokeWidth={2.8} />{b.behind}
+        </span>
       {/if}
       {#if b.ahead > 0}
-        <span class="text-[11px] text-accent-fg tabular-nums group-hover:hidden">↑{b.ahead}</span>
+        <span
+          class={["sync-pill sync-ahead", !b.isHead && "group-hover:hidden"]}
+          title="{b.ahead} local commit{b.ahead === 1 ? '' : 's'} not pushed yet"
+        >
+          <ArrowUp size={10} strokeWidth={2.8} />{b.ahead}
+        </span>
       {/if}
-      {#if b.isHead}
+      {#if dropping}
+        <span class="shrink-0 rounded-md bg-accent-strong px-1.5 text-[10.5px] leading-[18px] font-semibold text-white">Drop to merge</span>
+      {:else if b.isHead}
         <span class="mr-1 size-1.5 shrink-0 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)]"></span>
-      {:else if b.kind !== "tag" && !pending}
+      {:else if b.kind !== "tag" && !pending && !branchDrag.source}
         <button
           class="hidden h-6 items-center gap-1 rounded-md border border-accent/30 bg-accent-soft px-1.5 text-[11px] font-medium text-accent-fg group-hover:inline-flex hover:border-accent/60"
           title="Switch to {b.name}"
@@ -157,8 +190,23 @@
           <ChevronRight size={11} strokeWidth={2.5} class="-ml-1 transition-transform duration-200 {open[key] ? 'rotate-90' : ''}" />
           {label}
         </span>
+        {#if key === "local" && toPull > 0}
+          <span class="sync-pill sync-behind mr-1" title="{toPull} branch{toPull === 1 ? ' has' : 'es have'} commits to pull">
+            <ArrowDown size={10} strokeWidth={2.8} />{toPull}
+          </span>
+        {/if}
         <span class="text-[11px] text-fg-faint tabular-nums">{items.length}</span>
       </button>
+      {#if key === "local"}
+        <button
+          class="icon-btn ml-1 size-6 opacity-0 group-hover:opacity-100 focus:opacity-100"
+          title={app.active.lastFetched ? `Check for new commits (last checked ${ago(app.active.lastFetched)})` : "Check for new commits (fetch)"}
+          onclick={() => app.remote("fetch")}
+          disabled={!!app.remoteOp}
+        >
+          <RefreshCw size={12} class={app.remoteOp === "fetch" ? "animate-spin" : ""} />
+        </button>
+      {/if}
       {#if onadd}
         <button class="icon-btn ml-1 size-6 opacity-0 group-hover:opacity-100 focus:opacity-100" title="New {label === 'Tags' ? 'tag' : 'branch'}…" onclick={onadd}>
           <Plus size={13} />
@@ -301,3 +349,28 @@
   </div>
 </aside>
 {/if}
+
+<style>
+  .sync-pill {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    height: 17px;
+    padding: 0 6px 0 4px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .sync-behind {
+    color: oklch(0.86 0.1 230);
+    background: oklch(0.7 0.13 230 / 0.18);
+    box-shadow: inset 0 0 0 1px oklch(0.75 0.13 230 / 0.35);
+  }
+  .sync-ahead {
+    color: var(--color-accent-fg);
+    background: var(--color-accent-soft);
+    box-shadow: inset 0 0 0 1px oklch(0.75 0.2 var(--accent-h) / 0.35);
+  }
+</style>

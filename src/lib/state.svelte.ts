@@ -9,9 +9,11 @@ import {
   type Commit,
   type FileChange,
   type RepoInfo,
+  type RepoOperation,
   type TreeEntry,
 } from "./api";
 import { layoutGraph, type GraphLayout } from "./graph";
+import { computeSync } from "./sync";
 
 export type View = "history" | "changes" | "files";
 
@@ -111,6 +113,12 @@ export class RepoTab {
   selectedFile = $state<string | null>(null);
   expanded = new SvelteSet<string>();
 
+  /** When the remotes were last fetched (ms), for "to pull" freshness. */
+  lastFetched = $state<number | null>(null);
+
+  /** A merge/rebase stopped half-way (usually for conflicts), or null. */
+  operation = $state<RepoOperation | null>(null);
+
   /** Branch being switched to, for instant feedback while git works. */
   pendingCheckout = $state<string | null>(null);
 
@@ -200,6 +208,14 @@ export class RepoTab {
   }
 
   headBranch = $derived(this.branches.find((b) => b.isHead) ?? null);
+  /** Looking at a commit directly instead of a branch ("detached HEAD"). */
+  detached = $derived(this.commits.length > 0 && this.branches.length > 0 && !this.branches.some((b) => b.isHead));
+  /** The commit HEAD points at. */
+  headCommit = $derived(this.commits.find((c) => c.refs.some((r) => r === "HEAD" || r.startsWith("HEAD -> "))) ?? null);
+  /** Branch you were on before checking out a commit, to go back to. */
+  previousBranch = $state<string | null>(null);
+  /** Per-commit pushed / to-push / to-pull state for the history list. */
+  sync = $derived(computeSync(this.commits, this.branches));
   staged = $derived(this.status.filter((s) => s.staged));
   unstaged = $derived(this.status.filter((s) => !s.staged));
   selectedCommit = $derived(this.commits.find((c) => c.hash === this.selectedHash) ?? null);
@@ -231,10 +247,11 @@ export class RepoTab {
     const repo = this.repo;
     if (!repo) return;
     try {
-      const [commits, branches, status] = await Promise.all([
+      const [commits, branches, status, operation] = await Promise.all([
         git.log(repo.path),
         git.branches(repo.path),
         git.status(repo.path),
+        git.operation(repo.path).catch(() => null),
       ]);
       // The tab may have been pointed elsewhere while we were waiting.
       if (this.repo?.path !== repo.path) return;
@@ -242,8 +259,10 @@ export class RepoTab {
       this.graph = layoutGraph(commits);
       this.branches = branches;
       this.status = status;
+      this.operation = operation;
       const head = branches.find((b) => b.isHead);
-      if (head && this.repo.head !== head.name) this.repo = { ...this.repo, head: head.name };
+      const headName = head?.name ?? (branches.length ? null : this.repo.head);
+      if (this.repo.head !== headName) this.repo = { ...this.repo, head: headName };
       if (this.treeLoaded) void this.loadTree();
       if (this.selectedChange) {
         const sel = this.selectedChange;
@@ -355,6 +374,34 @@ export class RepoTab {
     await this.refresh();
   }
 
+  /** Check out a commit directly to see the project as it was (detached HEAD). */
+  async checkoutCommit(commit: Commit) {
+    if (!this.repo) return;
+    if (this.headBranch) this.previousBranch = this.headBranch.name;
+    try {
+      await git.checkoutCommit(this.repo.path, commit.hash);
+      this.toast("success", `Viewing ${commit.shortHash}`, "You're on an older commit. Use “Back” to return to your branch.");
+    } catch (e) {
+      this.toast("error", "Couldn't check out this commit", errorText(e));
+    }
+    await this.refresh();
+    this.selectedHash = commit.hash;
+  }
+
+  /** Leave a detached commit and return to the branch you came from. */
+  async backToBranch() {
+    const locals = this.branches.filter((b) => b.kind === "local");
+    const name = this.previousBranch;
+    const target =
+      locals.find((b) => b.name === name) ??
+      locals.find((b) => b.name === "main") ??
+      locals.find((b) => b.name === "master") ??
+      locals[0];
+    if (!target) return;
+    await this.checkout(target);
+    this.selectedHash = this.headCommit?.hash ?? this.selectedHash;
+  }
+
   // ---- creating and managing refs ---------------------------------------------
 
   async createBranch(name: string, start: string | null, checkout: boolean) {
@@ -384,6 +431,50 @@ export class RepoTab {
     return this.mutate((p) => git.merge(p, name), "Merge stopped", `Merged ${name} into ${into}`);
   }
 
+  /** Merge `source` into `target` (switching to `target` first if needed). */
+  async mergeInto(source: string, target: string) {
+    if (!this.repo) return;
+    try {
+      const result = await git.mergeInto(this.repo.path, source, target);
+      if (result === "conflicts") {
+        this.toast("info", "Merge needs your help", "Some files conflict. Resolve them, stage them, then press Continue.");
+        this.view = "changes";
+      } else {
+        this.toast("success", `Merged ${source} into ${target}`);
+      }
+    } catch (e) {
+      this.toast("error", "Couldn't merge", errorText(e));
+    }
+    await this.refresh();
+  }
+
+  /** Replay `branch` on top of `onto`. */
+  async rebaseOnto(branch: string, onto: string) {
+    if (!this.repo) return;
+    try {
+      const result = await git.rebaseOnto(this.repo.path, branch, onto);
+      if (result === "conflicts") {
+        this.toast("info", "Rebase paused", "Resolve the conflicts, stage them, then press Continue.");
+        this.view = "changes";
+      } else {
+        this.toast("success", `Rebased ${branch} onto ${onto}`);
+      }
+    } catch (e) {
+      this.toast("error", "Couldn't rebase", errorText(e));
+    }
+    await this.refresh();
+  }
+
+  continueOperation() {
+    const op = this.operation ?? "operation";
+    return this.mutate((p) => git.continueOperation(p), `Couldn't continue the ${op}`, `${op[0].toUpperCase()}${op.slice(1)} completed`);
+  }
+
+  abortOperation() {
+    const op = this.operation ?? "operation";
+    return this.mutate((p) => git.abortOperation(p), `Couldn't abort the ${op}`, `${op[0].toUpperCase()}${op.slice(1)} aborted`);
+  }
+
   createTag(name: string, target: string | null, message: string | null) {
     return this.mutate((p) => git.createTag(p, name, target, message), "Couldn't create tag", `Created tag ${name}`);
   }
@@ -402,7 +493,15 @@ export class RepoTab {
 
   // ---- project files ------------------------------------------------------------
 
-  private revealInTree(path: string) {
+  /** Show a file in the Files view, opening its folders. */
+  async openFile(path: string) {
+    if (!this.treeLoaded) await this.loadTree();
+    this.revealInTree(path);
+    this.selectedFile = path;
+    this.view = "files";
+  }
+
+  revealInTree(path: string) {
     const parts = path.split("/");
     for (let i = 1; i < parts.length; i++) this.expanded.add(parts.slice(0, i).join("/"));
   }
@@ -447,12 +546,36 @@ export class RepoTab {
     return ok;
   }
 
+  /**
+   * Quietly fetch so ahead/behind counts reflect the remote. Never changes your
+   * files. Tells you only when new commits arrive for the current branch.
+   */
+  async backgroundFetch() {
+    if (!this.repo || this.remoteOp || this.operation) return;
+    const repo = this.repo;
+    const before = this.headBranch?.behind ?? 0;
+    try {
+      await git.fetch(repo.path);
+      this.lastFetched = Date.now();
+    } catch {
+      return; // offline or no access: try again next time, no noise
+    }
+    if (this.repo?.path !== repo.path) return;
+    await this.refresh();
+    const head = this.headBranch;
+    if (head && head.behind > before) {
+      const n = head.behind - before;
+      this.toast("info", `${n} new commit${n === 1 ? "" : "s"} to pull`, `${head.upstream ?? "The remote"} has changes for ${head.name}.`);
+    }
+  }
+
   async remote(op: RemoteOp) {
     if (!this.repo || this.remoteOp) return;
     this.remoteOp = op;
     const labels = { fetch: "Fetched", pull: "Pulled", push: "Pushed" } as const;
     try {
       await git[op](this.repo.path);
+      this.lastFetched = Date.now();
       this.toast("success", labels[op], op === "fetch" ? `${this.repo.name} is up to date` : this.headBranch?.name);
     } catch (e) {
       this.toast("error", `${op[0].toUpperCase()}${op.slice(1)} failed`, errorText(e));

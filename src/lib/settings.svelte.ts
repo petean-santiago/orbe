@@ -7,7 +7,14 @@ import type { AiConfig, AiProvider } from "./api";
 
 export type SidebarSectionId = "workspace" | "branches" | "remotes" | "tags";
 export type ColumnId = "graph" | "description" | "author" | "date" | "hash";
-export type ToolbarItemId = "branch" | "create" | "search" | "assistant" | "fetch" | "pull" | "push";
+export type ToolbarItemId =
+  | "branch"
+  | "create"
+  | "search"
+  | "assistant"
+  | "fetch"
+  | "pull"
+  | "push";
 
 export interface Toggleable<T extends string> {
   id: T;
@@ -27,11 +34,19 @@ export interface Settings {
   density: "compact" | "comfortable";
   glass: "frosted" | "clear" | "solid";
   ambient: boolean;
+  /** Slow drifting of the ambient glows ("breathing"). */
+  ambientMotion: boolean;
   sidebarSide: "left" | "right";
   /** "auto" shows icons only when the window is narrow. */
   sidebarMode: "auto" | "open" | "icons";
   detailsPosition: "bottom" | "right";
   relativeDates: boolean;
+  /** Text diffs: one column, or old and new side by side. */
+  diffMode: "unified" | "split";
+  /** Hide changes that are only whitespace / indentation. */
+  diffIgnoreWhitespace: boolean;
+  /** Minutes between background fetches (0 = never), so "to pull" counts stay current. */
+  autoFetch: number;
   showAvatars: boolean;
   /** Panel sizes the user dragged: pixels, or fractions for the split panes. */
   sizes: PanelSizes;
@@ -71,7 +86,13 @@ export const DEFAULT_SIZES: PanelSizes = {
 /** Provider catalogue shown in Settings → AI. */
 export const AI_PROVIDERS: Record<
   Exclude<AiProvider, "none">,
-  { label: string; note: string; kind: "api" | "cli" | "local"; defaultModel: string; suggestions: string[] }
+  {
+    label: string;
+    note: string;
+    kind: "api" | "cli" | "local";
+    defaultModel: string;
+    suggestions: string[];
+  }
 > = {
   anthropic: {
     label: "Claude API",
@@ -122,25 +143,118 @@ export const ACCENTS = {
 } as const;
 
 export const UI_FONTS = {
-  bricolage: { label: "Bricolage Grotesque", family: '"Bricolage Grotesque Variable"', note: "Characterful, compact" },
-  onest: { label: "Onest", family: '"Onest Variable"', note: "Clean and modern" },
-  manrope: { label: "Manrope", family: '"Manrope Variable"', note: "Soft geometric" },
-  space: { label: "Space Grotesk", family: '"Space Grotesk Variable"', note: "Techy, quirky" },
+  bricolage: {
+    label: "Bricolage Grotesque",
+    family: '"Bricolage Grotesque Variable"',
+    note: "Characterful, compact",
+  },
+  onest: {
+    label: "Onest",
+    family: '"Onest Variable"',
+    note: "Clean and modern",
+  },
+  manrope: {
+    label: "Manrope",
+    family: '"Manrope Variable"',
+    note: "Soft geometric",
+  },
+  space: {
+    label: "Space Grotesk",
+    family: '"Space Grotesk Variable"',
+    note: "Techy, quirky",
+  },
   sora: { label: "Sora", family: '"Sora Variable"', note: "Wide, futuristic" },
 } as const;
 
 export const TITLE_FONTS = {
-  redhat: { label: "Red Hat Display", family: '"Red Hat Display Variable"', note: "Sharp, confident", weight: "800", variation: "normal", tracking: "-0.03em" },
-  syne: { label: "Syne", family: '"Syne Variable"', note: "Bold, artsy geometric", weight: "760", variation: "normal", tracking: "-0.02em" },
-  outfit: { label: "Outfit", family: '"Outfit Variable"', note: "Round, clean geometric", weight: "650", variation: "normal", tracking: "-0.03em" },
-  jakarta: { label: "Plus Jakarta Sans", family: '"Plus Jakarta Sans Variable"', note: "Modern, refined", weight: "750", variation: "normal", tracking: "-0.035em" },
-  archivo: { label: "Archivo Expanded", family: '"Archivo Variable"', note: "Wide and strong", weight: "750", variation: '"wdth" 125', tracking: "-0.02em" },
-  lexend: { label: "Lexend", family: '"Lexend Variable"', note: "Friendly, very readable", weight: "600", variation: "normal", tracking: "-0.035em" },
-  familjen: { label: "Familjen Grotesk", family: '"Familjen Grotesk Variable"', note: "Editorial grotesk", weight: "700", variation: "normal", tracking: "-0.03em" },
-  gabarito: { label: "Gabarito", family: '"Gabarito Variable"', note: "Friendly, punchy", weight: "800", variation: "normal", tracking: "-0.035em" },
-  unbounded: { label: "Unbounded", family: '"Unbounded Variable"', note: "Wide, futuristic", weight: "600", variation: "normal", tracking: "-0.04em" },
-  space: { label: "Space Grotesk", family: '"Space Grotesk Variable"', note: "Techy, quirky", weight: "700", variation: "normal", tracking: "-0.03em" },
-  bricolage: { label: "Bricolage Grotesque", family: '"Bricolage Grotesque Variable"', note: "Quirky grotesque", weight: "760", variation: "normal", tracking: "-0.03em" },
+  redhat: {
+    label: "Red Hat Display",
+    family: '"Red Hat Display Variable"',
+    note: "Sharp, confident",
+    weight: "800",
+    variation: "normal",
+    tracking: "-0.03em",
+  },
+  syne: {
+    label: "Syne",
+    family: '"Syne Variable"',
+    note: "Bold, artsy geometric",
+    weight: "760",
+    variation: "normal",
+    tracking: "-0.02em",
+  },
+  outfit: {
+    label: "Outfit",
+    family: '"Outfit Variable"',
+    note: "Round, clean geometric",
+    weight: "650",
+    variation: "normal",
+    tracking: "-0.03em",
+  },
+  jakarta: {
+    label: "Plus Jakarta Sans",
+    family: '"Plus Jakarta Sans Variable"',
+    note: "Modern, refined",
+    weight: "750",
+    variation: "normal",
+    tracking: "-0.035em",
+  },
+  archivo: {
+    label: "Archivo Expanded",
+    family: '"Archivo Variable"',
+    note: "Wide and strong",
+    weight: "750",
+    variation: '"wdth" 125',
+    tracking: "-0.02em",
+  },
+  lexend: {
+    label: "Lexend",
+    family: '"Lexend Variable"',
+    note: "Friendly, very readable",
+    weight: "600",
+    variation: "normal",
+    tracking: "-0.035em",
+  },
+  familjen: {
+    label: "Familjen Grotesk",
+    family: '"Familjen Grotesk Variable"',
+    note: "Editorial grotesk",
+    weight: "700",
+    variation: "normal",
+    tracking: "-0.03em",
+  },
+  gabarito: {
+    label: "Gabarito",
+    family: '"Gabarito Variable"',
+    note: "Friendly, punchy",
+    weight: "800",
+    variation: "normal",
+    tracking: "-0.035em",
+  },
+  unbounded: {
+    label: "Unbounded",
+    family: '"Unbounded Variable"',
+    note: "Wide, futuristic",
+    weight: "600",
+    variation: "normal",
+    tracking: "-0.04em",
+  },
+  space: {
+    label: "Space Grotesk",
+    family: '"Space Grotesk Variable"',
+    note: "Techy, quirky",
+    weight: "700",
+    variation: "normal",
+    tracking: "-0.03em",
+  },
+  bricolage: {
+    label: "Bricolage Grotesque",
+    family: '"Bricolage Grotesque Variable"',
+    note: "Quirky grotesque",
+    weight: "760",
+    variation: "normal",
+    tracking: "-0.03em",
+  },
 } as const;
 
 export const MONO_FONTS = {
@@ -157,7 +271,7 @@ export const SECTION_LABELS: Record<SidebarSectionId, string> = {
 };
 
 export const COLUMN_LABELS: Record<ColumnId, string> = {
-  graph: "Graph",
+  graph: "",
   description: "Description",
   author: "Author",
   date: "Date",
@@ -189,11 +303,15 @@ const DEFAULTS: Settings = {
   density: "comfortable",
   glass: "frosted",
   ambient: true,
+  ambientMotion: true,
   sidebarSide: "left",
   sidebarMode: "auto",
   sizes: { ...DEFAULT_SIZES },
   detailsPosition: "bottom",
   relativeDates: true,
+  diffMode: "unified",
+  diffIgnoreWhitespace: false,
+  autoFetch: 15,
   showAvatars: true,
   sidebarSections: [
     { id: "workspace", visible: true },
@@ -227,7 +345,10 @@ const DEFAULTS: Settings = {
 const KEY = "orbe.settings";
 
 /** Merge stored lists with defaults so new items added in updates still appear. */
-function mergeList<T extends string>(stored: Toggleable<T>[] | undefined, defaults: Toggleable<T>[]) {
+function mergeList<T extends string>(
+  stored: Toggleable<T>[] | undefined,
+  defaults: Toggleable<T>[],
+) {
   if (!Array.isArray(stored)) return structuredClone(defaults);
   const known = new Set(defaults.map((d) => d.id));
   const kept = stored.filter((s) => known.has(s.id));
@@ -237,26 +358,35 @@ function mergeList<T extends string>(stored: Toggleable<T>[] | undefined, defaul
 
 function load(): Settings {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "{}") as Partial<Settings>;
+    const raw = JSON.parse(
+      localStorage.getItem(KEY) ?? "{}",
+    ) as Partial<Settings>;
     const merged = { ...structuredClone(DEFAULTS), ...raw };
     if (!(merged.accent in ACCENTS)) merged.accent = DEFAULTS.accent;
     if (!(merged.uiFont in UI_FONTS)) merged.uiFont = DEFAULTS.uiFont;
-    if (!(merged.titleFont in TITLE_FONTS)) merged.titleFont = DEFAULTS.titleFont;
+    if (!(merged.titleFont in TITLE_FONTS))
+      merged.titleFont = DEFAULTS.titleFont;
     // v2: the title font moved to Red Hat Display (Fraunces/Syne were earlier defaults).
     if ((raw.version ?? 1) < 2) merged.titleFont = DEFAULTS.titleFont;
     merged.version = SETTINGS_VERSION;
     if (!(merged.monoFont in MONO_FONTS)) merged.monoFont = DEFAULTS.monoFont;
-    if (!["auto", "open", "icons"].includes(merged.sidebarMode)) merged.sidebarMode = "auto";
+    if (!["auto", "open", "icons"].includes(merged.sidebarMode))
+      merged.sidebarMode = "auto";
     merged.sizes = { ...DEFAULT_SIZES };
     for (const [k, v] of Object.entries(raw.sizes ?? {})) {
-      if (k in DEFAULT_SIZES && typeof v === "number" && Number.isFinite(v)) merged.sizes[k as keyof PanelSizes] = v;
+      if (k in DEFAULT_SIZES && typeof v === "number" && Number.isFinite(v))
+        merged.sizes[k as keyof PanelSizes] = v;
     }
     merged.scale = Math.min(1.25, Math.max(0.85, Number(merged.scale) || 1));
-    merged.sidebarSections = mergeList(raw.sidebarSections, DEFAULTS.sidebarSections);
+    merged.sidebarSections = mergeList(
+      raw.sidebarSections,
+      DEFAULTS.sidebarSections,
+    );
     merged.columns = mergeList(raw.columns, DEFAULTS.columns);
     merged.toolbar = mergeList(raw.toolbar, DEFAULTS.toolbar);
     merged.ai = { ...structuredClone(DEFAULTS.ai), ...(raw.ai ?? {}) };
-    if (merged.ai.provider !== "none" && !(merged.ai.provider in AI_PROVIDERS)) merged.ai.provider = "none";
+    if (merged.ai.provider !== "none" && !(merged.ai.provider in AI_PROVIDERS))
+      merged.ai.provider = "none";
     return merged;
   } catch {
     return structuredClone(DEFAULTS);
@@ -284,7 +414,9 @@ class SettingsStore {
   /** Provider settings for the backend; the model falls back to the provider default. */
   aiConfig = $derived.by<AiConfig>(() => {
     const { provider, models, baseUrl } = this.value.ai;
-    const model = models[provider]?.trim() || (provider !== "none" ? AI_PROVIDERS[provider].defaultModel : "");
+    const model =
+      models[provider]?.trim() ||
+      (provider !== "none" ? AI_PROVIDERS[provider].defaultModel : "");
     return { provider, model, baseUrl };
   });
 
@@ -300,13 +432,22 @@ class SettingsStore {
     localStorage.setItem(KEY, JSON.stringify(s));
     const root = document.documentElement;
     root.style.setProperty("--accent-h", String(ACCENTS[s.accent].hue));
-    root.style.setProperty("--font-sans", `${UI_FONTS[s.uiFont].family}, ui-sans-serif, system-ui, sans-serif`);
+    root.style.setProperty(
+      "--font-sans",
+      `${UI_FONTS[s.uiFont].family}, ui-sans-serif, system-ui, sans-serif`,
+    );
     const title = TITLE_FONTS[s.titleFont];
-    root.style.setProperty("--font-display", `${title.family}, ui-sans-serif, system-ui, sans-serif`);
+    root.style.setProperty(
+      "--font-display",
+      `${title.family}, ui-sans-serif, system-ui, sans-serif`,
+    );
     root.style.setProperty("--display-weight", title.weight);
     root.style.setProperty("--display-variation", title.variation);
     root.style.setProperty("--display-tracking", title.tracking);
-    root.style.setProperty("--font-mono", `${MONO_FONTS[s.monoFont].family}, ui-monospace, Consolas, monospace`);
+    root.style.setProperty(
+      "--font-mono",
+      `${MONO_FONTS[s.monoFont].family}, ui-monospace, Consolas, monospace`,
+    );
     applyScale(s.scale);
     root.dataset.glass = s.glass;
     root.dataset.density = s.density;

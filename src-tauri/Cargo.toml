@@ -22,6 +22,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 ignore = "0.4"
 trash = "5"
+base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

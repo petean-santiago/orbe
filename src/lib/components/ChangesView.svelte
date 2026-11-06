@@ -25,6 +25,8 @@
   import { modKey } from "../format";
   import { generateCommitMessage } from "../assistant.svelte";
   import DiffView from "./DiffView.svelte";
+  import ImageDiff from "./ImageDiff.svelte";
+  import { isImage, worktreeImage } from "../imageDiff";
   import FileList from "./FileList.svelte";
   import Resizer from "./Resizer.svelte";
   import { settings, DEFAULT_SIZES } from "../settings.svelte";
@@ -95,7 +97,7 @@
     let cancelled = false;
     loadingDiff = true;
     git
-      .fileDiff(repo.path, f.path, f.staged, f.status === "untracked")
+      .fileDiff(repo.path, f.path, f.staged, f.status === "untracked", settings.value.diffIgnoreWhitespace)
       .then((d) => !cancelled && (diff = d))
       .catch((e) => !cancelled && (diff = String(e)))
       .finally(() => !cancelled && (loadingDiff = false));
@@ -325,6 +327,13 @@
 
   <Resizer bind:value={settings.value.sizes.changesList} min={240} max={720} initial={DEFAULT_SIZES.changesList} label="Resize file list" />
   <div class="min-w-0 flex-1">
-    <DiffView {diff} path={app.selectedChange?.path ?? null} loading={loadingDiff} />
+    {#if app.selectedChange && app.repo && isImage(app.selectedChange.path)}
+      {@const img = worktreeImage(app.repo.path, app.selectedChange)}
+      {#key app.selectedChange.path + app.selectedChange.staged}
+        <ImageDiff path={app.selectedChange.path} before={img.before} after={img.after} />
+      {/key}
+    {:else}
+      <DiffView {diff} path={app.selectedChange?.path ?? null} loading={loadingDiff} />
+    {/if}
   </div>
 </div>

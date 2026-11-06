@@ -88,3 +88,31 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/**
+ * Fuzzy match: the indices of `query`'s characters in `text`, or null.
+ * A contiguous match is preferred; otherwise any in-order subsequence.
+ */
+export function fuzzyMatch(text: string, query: string): number[] | null {
+  const q = query.toLowerCase();
+  if (!q) return [];
+  const lower = text.toLowerCase();
+  const at = lower.indexOf(q);
+  if (at !== -1) return Array.from({ length: q.length }, (_, i) => at + i);
+  const hits: number[] = [];
+  let j = 0;
+  for (let i = 0; i < lower.length && j < q.length; i++) {
+    if (lower[i] === q[j]) {
+      hits.push(i);
+      j++;
+    }
+  }
+  return j === q.length ? hits : null;
+}
+
+/** Lower is better: contiguous hits near the start rank first. */
+export function matchScore(hits: number[]): number {
+  if (!hits.length) return 0;
+  const span = hits[hits.length - 1] - hits[0] + 1;
+  return (span - hits.length) * 10 + hits[0];
+}

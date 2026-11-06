@@ -177,6 +177,10 @@
               {@render row("Glass", "Solid turns off blur — fastest on older machines and Linux.", glassCtl)}
               {#snippet ambientCtl()}<Switch bind:checked={s.ambient} label="Ambient background" />{/snippet}
               {@render row("Ambient glow", "Soft coloured light behind the panels.", ambientCtl)}
+              {#if s.ambient}
+                {#snippet motionCtl()}<Switch bind:checked={s.ambientMotion} label="Breathing background" />{/snippet}
+                {@render row("Breathing background", "The glow drifts very slowly. Turn off to save battery.", motionCtl)}
+              {/if}
 
               {@render group("Size")}
               {#snippet densityCtl()}
@@ -333,6 +337,19 @@
               {@render row("Commit details", "Show the selected commit below or beside the history.", detailsCtl)}
               {#snippet avatarsCtl()}<Switch bind:checked={s.showAvatars} label="Show avatars" />{/snippet}
               {@render row("Author avatars", "Coloured initials next to author names.", avatarsCtl)}
+              {#snippet fetchCtl()}
+                <Segmented
+                  value={String(s.autoFetch)}
+                  options={[
+                    { value: "0", label: "Off" },
+                    { value: "5", label: "5 min" },
+                    { value: "15", label: "15 min" },
+                    { value: "30", label: "30 min" },
+                  ]}
+                  onchange={(v: string) => (s.autoFetch = Number(v))}
+                />
+              {/snippet}
+              {@render row("Check for new commits", "Fetch in the background so branches show what's waiting to be pulled. Never changes your files.", fetchCtl)}
               {#snippet datesCtl()}<Switch bind:checked={s.relativeDates} label="Relative dates" />{/snippet}
               {@render row("Relative dates", "“2 days ago” instead of the calendar date.", datesCtl)}
             {:else if page === "arrange"}
@@ -350,7 +367,8 @@
                 </div>
                 <div>
                   {@render group("History columns")}
-                  <SortableList bind:items={s.columns} labels={COLUMN_LABELS} />
+                  <!-- The graph column has no header text in History; name it here so the row isn't blank. -->
+                  <SortableList bind:items={s.columns} labels={{ ...COLUMN_LABELS, graph: "Graph" }} />
                 </div>
               </div>
             {:else if page === "ai"}
