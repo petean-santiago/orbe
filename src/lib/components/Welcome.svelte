@@ -3,7 +3,7 @@
   import { cloneRepository, createRepository } from "../actions";
   import { app } from "../state.svelte";
   import { modKey } from "../format";
-  import { isTauri } from "../api";
+  import { AUTHOR, isTauri, openAuthorSite } from "../api";
   import Logo from "./Logo.svelte";
 
   function ago(ms: number) {
@@ -89,4 +89,13 @@
       </p>
     {/if}
   </div>
+
+  <a
+    href={AUTHOR.site}
+    class="absolute bottom-5 left-1/2 -translate-x-1/2 text-[11.5px] text-fg-faint transition-colors hover:text-fg-muted"
+    title={AUTHOR.site}
+    onclick={(e) => (e.preventDefault(), openAuthorSite())}
+  >
+    Made by <span class="font-medium text-fg-muted underline decoration-accent/40 underline-offset-2">{AUTHOR.name}</span>
+  </a>
 </div>

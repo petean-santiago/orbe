@@ -7,6 +7,7 @@
     Check,
     ChevronDown,
     ChevronRight,
+    GitMerge,
     History,
     LoaderCircle,
     Maximize2,
@@ -25,6 +26,7 @@
   import { modKey } from "../format";
   import { generateCommitMessage } from "../assistant.svelte";
   import DiffView from "./DiffView.svelte";
+  import ConflictView from "./ConflictView.svelte";
   import ImageDiff from "./ImageDiff.svelte";
   import { isImage, worktreeImage } from "../imageDiff";
   import FileList from "./FileList.svelte";
@@ -36,7 +38,7 @@
   let amend = $state(false);
   let committing = $state(false);
   let generating = $state(false);
-  let open = $state({ staged: true, changes: true });
+  let open = $state({ conflicts: true, staged: true, changes: true });
   let expanded = $state(false);
   const summaryLength = $derived(tab.draftMessage.split("\n")[0].trim().length);
   const bodyLines = $derived(
@@ -55,7 +57,10 @@
    * every change (staged for you first), like VS Code's smart commit.
    */
   const commitAll = $derived(app.staged.length === 0 && app.unstaged.length > 0);
-  const conflicted = $derived(app.status.some((s) => s.status === "conflicted"));
+  const conflictFiles = $derived(app.unstaged.filter((f) => f.status === "conflicted"));
+  /** Unstaged changes that aren't conflicts (those get their own section). */
+  const changes = $derived(app.unstaged.filter((f) => f.status !== "conflicted"));
+  const conflicted = $derived(conflictFiles.length > 0);
   const fileCount = $derived(commitAll ? new Set(app.unstaged.map((f) => f.path)).size : app.staged.length);
   const hasMessage = $derived(tab.draftMessage.trim().length > 0);
   const branch = $derived(app.headBranch?.name ?? app.repo?.head ?? "HEAD");
@@ -82,7 +87,7 @@
 
   // Auto-select the first change so the diff pane is never empty when there is work.
   $effect(() => {
-    if (!app.selectedChange && app.status.length) app.selectedChange = app.staged[0] ?? app.unstaged[0];
+    if (!app.selectedChange && app.status.length) app.selectedChange = conflictFiles[0] ?? app.staged[0] ?? app.unstaged[0];
   });
 
   $effect(() => {
@@ -90,7 +95,7 @@
     const f = app.selectedChange;
     // Re-run when the status list refreshes, so the diff stays current.
     void app.status;
-    if (!repo || !f) {
+    if (!repo || !f || f.status === "conflicted") {
       diff = null;
       return;
     }
@@ -103,6 +108,16 @@
       .finally(() => !cancelled && (loadingDiff = false));
     return () => (cancelled = true);
   });
+
+  /** Stage a conflicted file exactly as it is on disk. */
+  async function markResolvedAsIs(f: FileChange) {
+    const ok = await confirmAction(
+      `Mark ${f.path} as resolved as it is now? Make sure no conflict markers (<<<<<<<) are left in it.`,
+      "Mark resolved",
+      "Mark resolved",
+    );
+    if (ok) await app.stage([f]);
+  }
 
   async function discard(files: FileChange[]) {
     const label = files.length === 1 ? files[0].path : `${files.length} files`;
@@ -171,7 +186,7 @@
   }
 </script>
 
-{#snippet section(key: "staged" | "changes", label: string, count: number, actions: import("svelte").Snippet)}
+{#snippet section(key: "conflicts" | "staged" | "changes", label: string, count: number, actions: import("svelte").Snippet)}
   <div class="group/section sticky top-0 z-10 flex h-8 items-center gap-1 bg-[oklch(0.1_0.012_320/0.85)] pr-2 pl-1.5 backdrop-blur-md">
     <button class="flex min-w-0 flex-1 items-center gap-1 text-left" onclick={() => (open[key] = !open[key])}>
       <ChevronRight size={13} strokeWidth={2.5} class={["shrink-0 text-fg-faint transition-transform duration-150", open[key] && "rotate-90"]} />
@@ -284,10 +299,27 @@
           </div>
         </div>
       {:else}
+        {#if conflictFiles.length}
+          {#snippet conflictActions()}
+            <GitMerge size={13} class="mr-0.5 text-conflict" />
+          {/snippet}
+          {@render section("conflicts", "Merge Conflicts", conflictFiles.length, conflictActions)}
+          {#if open.conflicts}
+            <FileList files={conflictFiles} selected={app.selectedChange} onselect={select}>
+              {#snippet actions(f)}
+                <button class="icon-btn size-6 hover:text-added" title="Mark resolved as it is" onclick={(e) => (e.stopPropagation(), markResolvedAsIs(f))}>
+                  <Check size={14} />
+                </button>
+              {/snippet}
+            </FileList>
+          {/if}
+        {/if}
+
         {#if app.staged.length}
           {#snippet stagedActions()}
             <button class="icon-btn size-6" title="Unstage all" onclick={() => app.unstage(app.staged)}><Minus size={14} /></button>
           {/snippet}
+          {#if conflictFiles.length}<div class="h-1"></div>{/if}
           {@render section("staged", "Staged Changes", app.staged.length, stagedActions)}
           {#if open.staged}
             <FileList files={app.staged} selected={app.selectedChange} onselect={select} onactivate={(f) => app.unstage([f])}>
@@ -300,16 +332,16 @@
           {/if}
         {/if}
 
-        {#if app.unstaged.length}
+        {#if changes.length}
           {#snippet changeActions()}
-            <button class="icon-btn size-6" title="Discard all changes" onclick={() => discard(app.unstaged)}><Undo2 size={13} /></button>
-            <button class="icon-btn size-6 hover:text-added" title="Stage all changes" onclick={() => app.stage(app.unstaged)}><Plus size={14} /></button>
+            <button class="icon-btn size-6" title="Discard all changes" onclick={() => discard(changes)}><Undo2 size={13} /></button>
+            <button class="icon-btn size-6 hover:text-added" title="Stage all changes" onclick={() => app.stage(changes)}><Plus size={14} /></button>
           {/snippet}
-          <div class={app.staged.length ? "mt-1" : ""}>
-            {@render section("changes", "Changes", app.unstaged.length, changeActions)}
+          <div class={app.staged.length || conflictFiles.length ? "mt-1" : ""}>
+            {@render section("changes", "Changes", changes.length, changeActions)}
           </div>
           {#if open.changes}
-            <FileList files={app.unstaged} selected={app.selectedChange} onselect={select} onactivate={(f) => app.stage([f])}>
+            <FileList files={changes} selected={app.selectedChange} onselect={select} onactivate={(f) => app.stage([f])}>
               {#snippet actions(f)}
                 <button class="icon-btn size-6" title="Discard changes" onclick={(e) => (e.stopPropagation(), discard([f]))}>
                   <Undo2 size={13} />
@@ -327,7 +359,11 @@
 
   <Resizer bind:value={settings.value.sizes.changesList} min={240} max={720} initial={DEFAULT_SIZES.changesList} label="Resize file list" />
   <div class="min-w-0 flex-1">
-    {#if app.selectedChange && app.repo && isImage(app.selectedChange.path)}
+    {#if app.selectedChange?.status === "conflicted" && app.repo}
+      {#key `${app.active.id}:${app.selectedChange.path}`}
+        <ConflictView path={app.selectedChange.path} />
+      {/key}
+    {:else if app.selectedChange && app.repo && isImage(app.selectedChange.path)}
       {@const img = worktreeImage(app.repo.path, app.selectedChange)}
       {#key app.selectedChange.path + app.selectedChange.staged}
         <ImageDiff path={app.selectedChange.path} before={img.before} after={img.after} />

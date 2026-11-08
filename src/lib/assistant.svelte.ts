@@ -10,20 +10,31 @@ import { cleanCommitMessage } from "./commitMessage";
 
 /** Diffs bigger than this are cut, and the model is told what was left out. */
 const MAX_DIFF_CHARS = 150_000;
+/**
+ * Commit messages need far less: a smaller diff keeps generation quick, and
+ * the full file list (sent separately) still shows everything that changed.
+ */
+const MAX_COMMIT_DIFF_CHARS = 30_000;
+/** Hard cap on body bullets, in case the model ignores the prompt. */
+const MAX_COMMIT_BULLETS = 4;
 
 const SYSTEM = `You are the assistant built into Orbe, a desktop Git client. You help a developer understand and manage their Git repository: explain changes and commits, write commit messages and pull request descriptions, review diffs, and suggest Git commands.
 
 Be concise and concrete, and refer to files by path. Use Markdown. Put commands in fenced code blocks. Prefer safe commands, and clearly warn before anything that can lose work (reset --hard, push --force, clean, deleting branches).`;
 
-const COMMIT_SYSTEM = `You write Git commit messages for staged changes. Your reply is pasted directly into the commit message box, so it must contain the commit message and nothing else.
+const COMMIT_SYSTEM = `You write short, well-structured Git commit messages. Your reply is pasted directly into the commit message box, so it must contain the commit message and nothing else.
 
-Format:
-- Line 1: the summary. If the recent commit subjects show a clear convention (for example Conventional Commits like "feat: ..." or a ticket prefix), follow it; otherwise use the imperative mood ("Add", "Fix", "Refactor"). At most 72 characters.
+Format, exactly:
+- Line 1: the summary, ideally under 60 characters (never over 72). If the recent commit subjects show a clear convention (for example Conventional Commits like "feat: ..." or a ticket prefix), follow it; otherwise use the imperative mood ("Add", "Fix", "Refactor"). No trailing period.
 - Line 2: empty.
-- Then the body: what changed and why, as "- " bullets, one per meaningful change, covering every part of the diff. A single trivial change may have a one-sentence body instead.
+- Then 1 to ${MAX_COMMIT_BULLETS} "- " bullets, one line each (under 90 characters), most important first.
 
-Never include a git command (such as git commit -m), code fences, quotes around the message, Markdown headings or bold, or any text before or after the message. Do not run any commands; everything you need is in the diff below.`;
+Be brief:
+- Describe intent and effect (what changed for the user or the code, and why), not a file-by-file tour.
+- Group related edits into one bullet. Skip trivial details: formatting, imports, renames, lockfiles, generated files.
+- For a small, single-purpose change, write just the summary line with no body.
 
+Never include a git command (such as git commit -m), code fences, quotes around the message, Markdown headings or bold, or any text before or after the message. Do not run any commands or read any files; everything you need is below.`;
 export const aiReady = () => settings.value.ai.provider !== "none";
 
 export function providerLabel(): string {
@@ -33,10 +44,10 @@ export function providerLabel(): string {
   return model ? `${AI_PROVIDERS[p].label} · ${model}` : AI_PROVIDERS[p].label;
 }
 
-function clip(text: string, label: string): string {
-  if (text.length <= MAX_DIFF_CHARS) return text;
-  const rest = text.length - MAX_DIFF_CHARS;
-  return `${text.slice(0, MAX_DIFF_CHARS)}\n\n[${label} truncated: ${rest.toLocaleString()} more characters were not included]`;
+function clip(text: string, label: string, max = MAX_DIFF_CHARS): string {
+  if (text.length <= max) return text;
+  const rest = text.length - max;
+  return `${text.slice(0, max)}\n\n[${label} truncated: ${rest.toLocaleString()} more characters were not included]`;
 }
 
 function repoContext(tab: RepoTab): string {
@@ -87,18 +98,21 @@ export async function generateCommitMessage(tab: RepoTab): Promise<{ summary: st
     // Describe what Commit will actually include: the staged files, or everything when nothing is staged.
     let diff = await git.stagedDiff(tab.repo.path);
     let label = "Staged changes";
+    let files = tab.status.filter((s) => s.staged);
     if (!diff.trim()) {
       diff = await git.workingDiff(tab.repo.path);
       label = "Changes to commit";
+      files = tab.status;
     }
     if (!diff.trim()) {
       app.toast("info", "Nothing to commit", "Your working tree is clean.");
       return null;
     }
     const recent = tab.commits.slice(0, 15).map((c) => `- ${c.subject}`).join("\n") || "(no commits yet)";
-    const prompt = `Recent commit subjects in this repository:\n${recent}\n\n${label}:\n${clip(diff, "Diff")}`;
+    const fileList = [...new Set(files.map((f) => `- ${f.status}: ${f.path}`))].slice(0, 80).join("\n");
+    const prompt = `Recent commit subjects in this repository:\n${recent}\n\nFiles in this commit:\n${fileList}\n\n${label}:\n${clip(diff, "Diff", MAX_COMMIT_DIFF_CHARS)}`;
     const raw = await complete(tab, COMMIT_SYSTEM, [{ role: "user", content: prompt }], "low");
-    const message = cleanCommitMessage(raw);
+    const message = cleanCommitMessage(raw, MAX_COMMIT_BULLETS);
     if (!message.summary) throw new Error("The model didn't return a commit message.");
     return message;
   } catch (e) {

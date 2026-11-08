@@ -88,6 +88,7 @@
   //   &view=changes    start in Changes          &palette  open the palette
   //   &settings=page   open Settings on a page        &view=files  start in Files
   //   &assistant       open the AI panel             &switcher    open the branch switcher
+  //   &conflict        start mid-merge with conflicts to resolve
   const params = new URLSearchParams(location.search);
   if (params.get("settings")) ui.settingsPage = params.get("settings") as SettingsPage;
 
@@ -98,6 +99,7 @@
       await app.open("/Users/demo/projects/aurora");
       const view = params.get("view");
       if (view === "changes" || view === "files") app.view = view;
+      if (params.has("conflict")) app.view = "changes";
       if (params.has("palette")) app.paletteOpen = true;
       if (params.has("assistant")) ui.assistant = true;
       if (params.has("switcher")) ui.branchSwitcher = true;

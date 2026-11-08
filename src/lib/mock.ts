@@ -112,6 +112,75 @@ let status: FileChange[] = [
   { path: "src/assets/hero.png", oldPath: null, status: "modified", staged: false },
 ];
 
+// `?demo&conflict` starts the demo repository half-way through a merge with conflicts.
+const demoConflict = typeof location !== "undefined" && new URLSearchParams(location.search).has("conflict");
+let operation: "merge" | null = demoConflict ? "merge" : null;
+
+/** Which sides git kept for each demo conflict (a missing side deleted the file). */
+const CONFLICTS: Record<string, { base: boolean; ours: boolean; theirs: boolean }> = {
+  "src/lib/theme.ts": { base: true, ours: true, theirs: true },
+  "docs/setup.md": { base: true, ours: true, theirs: false },
+  "src/assets/logo.png": { base: true, ours: true, theirs: true },
+};
+
+const THEME_CONFLICT = `/**
+ * Theme tokens shared by every component.
+ */
+export interface Theme {
+  accent: string;
+  radius: number;
+<<<<<<< HEAD
+  glass: "frosted" | "clear" | "solid";
+=======
+  glass: boolean;
+  blur: number;
+>>>>>>> feature/theme
+}
+
+export const defaults: Theme = {
+  accent: "oklch(0.7 0.25 330)",
+  radius: 12,
+  glass: "frosted",
+};
+
+export function applyTheme(theme: Theme, root: HTMLElement) {
+  root.style.setProperty("--accent", theme.accent);
+  root.style.setProperty("--radius", \`\${theme.radius}px\`);
+  root.dataset.glass = theme.glass;
+}
+
+export function mix(a: string, b: string, amount = 0.5): string {
+  return \`color-mix(in oklch, \${a} \${amount * 100}%, \${b})\`;
+}
+
+export function contrast(color: string): "light" | "dark" {
+  const l = Number(/oklch\(([\d.]+)/.exec(color)?.[1] ?? 0.5);
+  return l > 0.6 ? "dark" : "light";
+}
+
+export function describe(theme: Theme): string {
+<<<<<<< HEAD
+  return \`\${theme.accent} · \${theme.glass} glass\`;
+=======
+  const glass = theme.glass ? \`glass \${theme.blur}px\` : "no glass";
+  return \`\${theme.accent} · \${glass}\`;
+>>>>>>> feature/theme
+}
+
+export const PRESETS = ["fuchsia", "violet", "ocean"] as const;
+`;
+
+/** Files saved through the conflict editor. */
+const written = new Map<string, string>();
+
+if (demoConflict) {
+  status = [
+    ...Object.keys(CONFLICTS).map((path): FileChange => ({ path, oldPath: null, status: "conflicted", staged: false })),
+    { path: "src/lib/components/Ambient.svelte", oldPath: null, status: "modified", staged: true },
+    { path: "src/app.css", oldPath: null, status: "modified", staged: true },
+  ];
+}
+
 const now = Math.floor(Date.now() / 1000);
 const H = 3600;
 const br = (name: string, kind: Branch["kind"], extra: Partial<Branch> = {}): Branch => ({
@@ -339,7 +408,11 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
       return diffFor(a.file, f?.status ?? "modified") as T;
     }
     case "stage_files":
-      status = status.map((s) => ((a.files as string[]).includes(s.path) ? { ...s, staged: true, status: s.status === "untracked" ? "added" : s.status } : s));
+      status = status.map((s) =>
+        (a.files as string[]).includes(s.path)
+          ? { ...s, staged: true, status: s.status === "untracked" ? "added" : s.status === "conflicted" ? "modified" : s.status }
+          : s,
+      );
       return undefined as T;
     case "unstage_files":
       status = status.map((s) => ((a.files as string[]).includes(s.path) ? { ...s, staged: false, status: s.status === "added" ? "untracked" : s.status } : s));
@@ -424,9 +497,29 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
       branches.forEach((b) => (b.isHead = b.kind === "local" && b.name === a.branch));
       return "rebased" as T;
     case "repo_operation":
-      return null as T;
+      return operation as T;
     case "continue_operation":
+      if (status.some((s) => s.status === "conflicted")) throw new Error("You must resolve all conflicts first.");
+      operation = null;
+      status = status.filter((s) => !s.staged);
+      return undefined as T;
     case "abort_operation":
+      operation = null;
+      status = status.filter((s) => !s.staged && s.status !== "conflicted");
+      return undefined as T;
+    case "get_conflict_info": {
+      const c = CONFLICTS[a.file] ?? { base: true, ours: true, theirs: true };
+      return { ...c, oursLabel: "main", theirsLabel: "feature/theme" } as T;
+    }
+    case "resolve_conflict": {
+      const keepsFile = CONFLICTS[a.file]?.[a.side === "ours" ? "ours" : "theirs"] ?? true;
+      status = status.map((s) =>
+        s.path === a.file && s.status === "conflicted" ? { ...s, staged: true, status: keepsFile ? "modified" : "deleted" } : s,
+      );
+      return undefined as T;
+    }
+    case "write_file":
+      written.set(a.file, a.content);
       return undefined as T;
     case "merge_branch":
     case "stash_save":
@@ -444,6 +537,12 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
     case "list_tree":
       return structuredClone(tree) as T;
     case "read_file": {
+      if (written.has(a.file)) {
+        const text = written.get(a.file)!;
+        return { text, binary: false, size: text.length, truncated: false } as T;
+      }
+      if (a.file === "src/lib/theme.ts" && demoConflict)
+        return { text: THEME_CONFLICT, binary: false, size: THEME_CONFLICT.length, truncated: false } as T;
       if (/\.(png|pdf)$/.test(a.file)) return { text: null, binary: true, size: 18_432, truncated: false } as T;
       const text = sampleFile(a.file);
       return { text, binary: false, size: text.length, truncated: false } as T;

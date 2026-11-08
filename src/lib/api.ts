@@ -56,6 +56,19 @@ export interface Branch {
 /** A git operation stopped half-way, usually for conflicts. */
 export type RepoOperation = "merge" | "rebase" | "cherry-pick" | "revert";
 
+/** What git kept for a conflicted file. A missing side deleted the file. */
+export interface ConflictInfo {
+  base: boolean;
+  ours: boolean;
+  theirs: boolean;
+  /** Current side (HEAD), e.g. "main". */
+  oursLabel: string;
+  /** Incoming side, e.g. "a1b2c3d Add search". */
+  theirsLabel: string;
+}
+
+export type ConflictSide = "ours" | "theirs";
+
 export interface TreeEntry {
   path: string;
   dir: boolean;
@@ -127,6 +140,10 @@ export const git = {
   operation: (path: string) => call<RepoOperation | null>("repo_operation", { path }),
   continueOperation: (path: string) => call<void>("continue_operation", { path }),
   abortOperation: (path: string) => call<void>("abort_operation", { path }),
+  conflictInfo: (path: string, file: string) => call<ConflictInfo>("get_conflict_info", { path, file }),
+  /** Keep one whole side of a conflicted file and stage it. */
+  resolveConflict: (path: string, file: string, side: ConflictSide) => call<void>("resolve_conflict", { path, file, side }),
+  writeFile: (path: string, file: string, content: string) => call<void>("write_file", { path, file, content }),
   createTag: (path: string, name: string, target: string | null, message: string | null) =>
     call<void>("create_tag", { path, name, target, message }),
   deleteTag: (path: string, name: string) => call<void>("delete_tag", { path, name }),
@@ -188,6 +205,17 @@ export async function confirmAction(message: string, title = "Orbe", okLabel = "
   if (!isTauri) return window.confirm(message);
   const { ask } = await import("@tauri-apps/plugin-dialog");
   return ask(message, { title, kind: "warning", okLabel, cancelLabel: "Cancel" });
+}
+
+export const AUTHOR = { name: "Santiago Petean", site: "https://www.santiago-petean.com/" } as const;
+
+/** Open the author's website in the default browser. */
+export async function openAuthorSite() {
+  if (!isTauri) {
+    window.open(AUTHOR.site, "_blank", "noopener");
+    return;
+  }
+  await invoke("open_author_site");
 }
 
 export async function windowAction(action: "minimize" | "toggleMaximize" | "close") {

@@ -34,7 +34,22 @@ function fromGitCommand(text: string): string | null {
   return parts.length ? parts.join("\n\n") : null;
 }
 
-export function cleanCommitMessage(raw: string): CommitMessage {
+/** Keep at most `max` "- " bullets (and the text before them), dropping the rest. */
+function capBullets(body: string, max: number): string {
+  const out: string[] = [];
+  let bullets = 0;
+  for (const line of body.split("\n")) {
+    if (/^\s*[-*•]\s/.test(line)) {
+      if (++bullets > max) break;
+    } else if (bullets >= max && line.trim()) {
+      break; // a wrapped continuation or trailing paragraph after the last kept bullet
+    }
+    out.push(line);
+  }
+  return out.join("\n").trim();
+}
+
+export function cleanCommitMessage(raw: string, maxBullets = Infinity): CommitMessage {
   let text = raw.replace(/\r\n/g, "\n").trim();
 
   // 1. A git command: use its message arguments.
@@ -60,12 +75,13 @@ export function cleanCommitMessage(raw: string): CommitMessage {
     .replace(/^["'`](.*)["'`]$/, "$1")
     .trim();
 
-  const description = lines
+  let description = lines
     .slice(1)
     .join("\n")
     .replace(/^\s*\n/, "")
     .replace(/\n["'`]$/, "")
     .trim();
+  if (Number.isFinite(maxBullets)) description = capBullets(description, maxBullets);
 
   return { summary, description };
 }

@@ -1063,3 +1063,148 @@ pub async fn read_blob_base64(path: String, spec: String) -> CmdResult<String> {
 pub async fn checkout_commit(path: String, hash: String) -> CmdResult<()> {
     blocking(move || run_git(&path, &["switch", "--detach", &hash]).map(|_| ())).await
 }
+
+// ---------------------------------------------------------------------------
+// Conflict resolution
+// ---------------------------------------------------------------------------
+
+/// What git kept for a conflicted path, so the UI can offer the right choices.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictInfo {
+    /// Index stages present for the path: 1 = common ancestor, 2 = ours, 3 = theirs.
+    /// A missing side means that side deleted the file.
+    base: bool,
+    ours: bool,
+    theirs: bool,
+    /// Short description of the current side (HEAD), e.g. "main".
+    ours_label: String,
+    /// Short description of the incoming side, e.g. "a1b2c3d Add search".
+    theirs_label: String,
+}
+
+/// `<short hash> <subject>` for a revision, or None when it doesn't resolve.
+fn describe_rev(repo: &str, rev: &str) -> Option<String> {
+    run_git(repo, &["log", "-1", "--format=%h %s", rev, "--"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[tauri::command]
+pub async fn get_conflict_info(path: String, file: String) -> CmdResult<ConflictInfo> {
+    blocking(move || {
+        let out = run_git(&path, &["ls-files", "-u", "-z", "--", &file])?;
+        let (mut base, mut ours, mut theirs) = (false, false, false);
+        // Each entry: "<mode> <object> <stage>\t<path>".
+        for entry in out.split('\0').filter(|s| !s.is_empty()) {
+            let meta = entry.split('\t').next().unwrap_or("");
+            match meta.split(' ').nth(2) {
+                Some("1") => base = true,
+                Some("2") => ours = true,
+                Some("3") => theirs = true,
+                _ => {}
+            }
+        }
+
+        let branch = current_branch(&path).unwrap_or_default();
+        let ours_label = if branch.is_empty() {
+            describe_rev(&path, "HEAD").unwrap_or_else(|| "HEAD".into())
+        } else {
+            branch
+        };
+        let incoming_ref = match current_operation(&path)? {
+            Some("merge") => "MERGE_HEAD",
+            Some("rebase") => "REBASE_HEAD",
+            Some("cherry-pick") => "CHERRY_PICK_HEAD",
+            Some("revert") => "REVERT_HEAD",
+            _ => "",
+        };
+        let theirs_label = if incoming_ref.is_empty() {
+            "Incoming".into()
+        } else {
+            describe_rev(&path, incoming_ref).unwrap_or_else(|| incoming_ref.into())
+        };
+
+        Ok(ConflictInfo {
+            base,
+            ours,
+            theirs,
+            ours_label,
+            theirs_label,
+        })
+    })
+    .await
+}
+
+/// Resolve a whole file by keeping one side ("ours" = current, "theirs" =
+/// incoming) and stage the result. If that side deleted the file, the
+/// deletion is what gets kept.
+#[tauri::command]
+pub async fn resolve_conflict(path: String, file: String, side: String) -> CmdResult<()> {
+    blocking(move || {
+        let (flag, stage) = match side.as_str() {
+            "ours" => ("--ours", "2"),
+            "theirs" => ("--theirs", "3"),
+            _ => return Err(format!("Unknown side: {side}")),
+        };
+        let stages = run_git(&path, &["ls-files", "-u", "-z", "--", &file])?;
+        let side_exists = stages
+            .split('\0')
+            .filter_map(|e| e.split('\t').next())
+            .any(|meta| meta.split(' ').nth(2) == Some(stage));
+
+        if side_exists {
+            run_git(&path, &["checkout", flag, "--", &file])?;
+            run_git(&path, &["add", "--", &file])?;
+        } else {
+            run_git(&path, &["rm", "--quiet", "--ignore-unmatch", "--", &file])?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Overwrite a working-tree file with `content` (used to save a resolved conflict).
+#[tauri::command]
+pub async fn write_file(path: String, file: String, content: String) -> CmdResult<()> {
+    blocking(move || {
+        let full = safe_join(&path, &file)?;
+        fs::write(&full, content).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// About
+// ---------------------------------------------------------------------------
+
+/// Orbe's author, Santiago Petean.
+pub const AUTHOR_SITE: &str = "https://www.santiago-petean.com/";
+
+/// Open the author's website in the default browser. The URL is fixed on
+/// purpose, so the frontend can't use this to launch arbitrary programs.
+#[tauri::command]
+pub async fn open_author_site() -> CmdResult<()> {
+    blocking(|| {
+        #[cfg(target_os = "macos")]
+        let mut cmd = Command::new("open");
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = Command::new("rundll32");
+            c.arg("url.dll,FileProtocolHandler");
+            c
+        };
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let mut cmd = Command::new("xdg-open");
+
+        cmd.arg(AUTHOR_SITE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Couldn't open the browser ({e})."))
+    })
+    .await
+}

@@ -26,7 +26,7 @@
     TITLE_FONTS,
     settings,
   } from "../settings.svelte";
-  import { confirmAction } from "../api";
+  import { AUTHOR, confirmAction, openAuthorSite } from "../api";
   import Segmented from "./Segmented.svelte";
   import SortableList from "./SortableList.svelte";
   import Switch from "./Switch.svelte";
@@ -127,6 +127,14 @@
       <button class="btn h-9 justify-center @max-[820px]/dialog:px-0" onclick={reset} title="Reset to defaults">
         <RotateCcw size={14} /> <span class="@max-[820px]/dialog:hidden">Reset to defaults</span>
       </button>
+      <a
+        href={AUTHOR.site}
+        class="mt-3 px-2 text-center text-[11px] leading-snug text-fg-faint transition-colors hover:text-fg-muted @max-[820px]/dialog:hidden"
+        title={AUTHOR.site}
+        onclick={(e) => (e.preventDefault(), openAuthorSite())}
+      >
+        Orbe · by <span class="font-medium text-fg-muted">{AUTHOR.name}</span>
+      </a>
     </nav>
 
     <!-- Content -->

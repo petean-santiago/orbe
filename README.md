@@ -4,6 +4,7 @@
 
 <h1 align="center">Orbe</h1>
 <p align="center">A calm, beautiful Git client for Windows, macOS (Apple Silicon) and Linux.</p>
+<p align="center">Created by <a href="https://www.santiago-petean.com/"><strong>Santiago Petean</strong></a></p>
 
 ---
 
@@ -25,6 +26,7 @@ commit, branch, fetch/pull/push) works. See [Roadmap](#roadmap) for what's next.
 - [Conventions and gotchas](#conventions-and-gotchas)
 - [Checks and builds](#checks-and-builds)
 - [Roadmap](#roadmap)
+- [Author](#author)
 
 ## Quick start
 
@@ -66,6 +68,7 @@ URL parameters jump straight to a given state:
 | `/?demo&switcher`             | The branch switcher                               |
 | `/?demo&assistant`            | The AI assistant panel (with demo replies)        |
 | `/?demo&settings=arrange`     | Settings on a page (`appearance`, `typography`, `layout`, `arrange`, `ai`) |
+| `/?demo&conflict`             | A merge stopped for conflicts, ready to resolve   |
 
 > `pnpm dev` and `pnpm tauri dev` both use port **1420**. Stop one before starting the other.
 
@@ -81,6 +84,7 @@ URL parameters jump straight to a given state:
 - **Sidebar:** local branches grouped into folders (`feature/`, `fix/`…), remotes grouped by remote, tags, and a filter box. Click a branch to show it in History; hover and press **Switch** (or double-click) to check it out; right-click for more.
 - **Travel back in history:** double-click any commit to *check it out* (detached HEAD), *create a branch there*, or *switch to a branch* whose tip it is. While you're on an older commit a banner says so, with **Back to <branch>** and **New branch here**.
 - **Drag to merge:** drag a branch (sidebar row or history pill) onto another branch, or onto the current branch in the toolbar, then choose *Merge* or *Rebase*. If git stops for conflicts, a banner shows the merge/rebase in progress with **Continue** and **Abort**.
+- **Resolve conflicts in Orbe:** conflicted files get their own *Merge Conflicts* section in Changes. Selecting one shows each conflict with the *current* and *incoming* sides next to each other (and the common ancestor with `diff3`), with **Accept current**, **Accept incoming** and **Accept both** per block, or for the whole file. **Edit** switches to the full result as text for hand-tuning; **Mark resolved** saves and stages it and jumps to the next conflicted file. Binary files and delete/modify conflicts offer *keep this version* / *keep it deleted*. When nothing is left, press **Continue** in the banner.
 - **Branch switcher** (`Ctrl/⌘ B`, or click the branch in the toolbar): fuzzy search, most recently updated first, keyboard driven. Switching is instant in the UI while Git catches up, and typing a new name creates the branch.
 - **Create anything:** the **New** toolbar menu, right-click menus and the palette create branches (from HEAD, a branch, a tag or any commit), tags, files and folders; rename, delete and merge branches; stash and apply stashes; clone a repository or create a new one.
 - **AI assistant** (`Ctrl/⌘ J`): a chat panel that knows the repository state. Conversations are saved per repository (in the app data folder) and survive hiding the panel, switching tabs and restarting; start a **New chat**, reopen earlier ones from the list, or close a conversation to delete it. There is also **Generate** for commit messages, **Explain** for commits, and one-click "summarize my changes" / "review staged changes". See [AI providers](#ai-providers).
@@ -294,7 +298,7 @@ Rough priorities. Nothing here is committed to yet.
 - [ ] Rebase and cherry-pick from the sidebar and history
 - [ ] Orbe as an MCP server, so AI tools can drive it
 - [ ] Streaming AI replies
-- [ ] Conflict resolution view
+- [x] Conflict resolution view
 - [ ] File-system watcher instead of refresh-on-focus
 - [ ] Credential handling for HTTPS/SSH push and pull (prompts are currently disabled)
 - [ ] Blame and file history
@@ -302,3 +306,7 @@ Rough priorities. Nothing here is committed to yet.
 - [ ] `gix` for faster log and status on large repositories
 - [ ] Settings import/export; light theme
 - [ ] Code signing, notarization and auto-update
+
+## Author
+
+Orbe is designed and built by **Santiago Petean**: [santiago-petean.com](https://www.santiago-petean.com/).

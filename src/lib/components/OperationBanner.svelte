@@ -37,7 +37,7 @@
       <CircleAlert size={16} class="shrink-0 text-modified" />
       <span class="min-w-0 flex-1 text-fg-muted">
         <span class="font-semibold text-fg">{NAMES[op]} in progress</span> ·
-        {conflicts} conflicted file{conflicts === 1 ? "" : "s"}. Fix them in your editor, stage them (+), then continue.
+        {conflicts} conflicted file{conflicts === 1 ? "" : "s"}. Resolve {conflicts === 1 ? "it" : "them"} in Changes, then continue.
       </span>
     {:else}
       <CircleCheck size={16} class="shrink-0 text-added" />
@@ -46,7 +46,7 @@
       </span>
     {/if}
     {#if conflicts && tab.view !== "changes"}
-      <button class="btn h-7 px-2.5 text-[12px]" onclick={() => (tab.view = "changes")}>Show conflicts</button>
+      <button class="btn h-7 px-2.5 text-[12px]" onclick={() => (tab.view = "changes")}>Resolve conflicts</button>
     {/if}
     <button class="btn h-7 px-2.5 text-[12px]" disabled={!!busy} onclick={() => run("abort")}>
       {#if busy === "abort"}<LoaderCircle size={12} class="animate-spin" />{/if} Abort

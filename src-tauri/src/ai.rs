@@ -15,7 +15,7 @@ use crate::git::blocking;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -240,6 +240,27 @@ async fn openai(cfg: &AiConfig, system: &str, messages: &[ChatMessage]) -> CmdRe
 // CLI providers (use the user's subscription instead of an API key)
 // ---------------------------------------------------------------------------
 
+/// `~/.nvm/versions/node/<version>/bin` for every installed Node, newest first.
+fn nvm_bins(home: &Path) -> Vec<PathBuf> {
+    let root = std::env::var_os("NVM_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".nvm"))
+        .join("versions/node");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let version = |name: &str| -> Vec<u32> {
+        name.trim_start_matches('v').split('.').map(|n| n.parse().unwrap_or(0)).collect()
+    };
+    let mut found: Vec<(Vec<u32>, PathBuf)> = entries
+        .flatten()
+        .map(|e| (version(&e.file_name().to_string_lossy()), e.path().join("bin")))
+        .filter(|(_, bin)| bin.is_dir())
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, bin)| bin).collect()
+}
+
 /// GUI apps often start with a minimal PATH, so add the usual install folders.
 fn cli_path() -> Option<std::ffi::OsString> {
     let home = std::env::var_os("HOME")
@@ -247,9 +268,20 @@ fn cli_path() -> Option<std::ffi::OsString> {
         .map(PathBuf::from);
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(h) = &home {
-        for d in [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin"] {
+        for d in [
+            ".local/bin",
+            ".claude/local",
+            ".npm-global/bin",
+            ".bun/bin",
+            ".volta/bin",
+            ".asdf/shims",
+            ".local/share/mise/shims",
+        ] {
             dirs.push(h.join(d));
         }
+        // nvm only sets PATH in shell startup files, which GUI apps never read.
+        // Its global npm packages (and the `node` they need) live per version.
+        dirs.extend(nvm_bins(h));
     }
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
@@ -354,15 +386,41 @@ fn flatten(system: &str, messages: &[ChatMessage]) -> String {
 
 const CLI_GUARD: &str = "\n\nFollow the format asked for above exactly. Do not edit files or run commands that change anything.";
 
-fn claude_code(cfg: &AiConfig, system: &str, messages: &[ChatMessage], cwd: Option<&str>) -> CmdResult<String> {
+/// An older CLI rejecting one of our newer flags.
+fn unknown_flag(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("unknown option") || e.contains("unexpected argument") || e.contains("unrecognized")
+}
+
+/// `quick` is for one-shot text tasks like commit messages (effort "low").
+fn claude_code(cfg: &AiConfig, system: &str, messages: &[ChatMessage], cwd: Option<&str>, quick: bool) -> CmdResult<String> {
     let mut args: Vec<String> = ["-p", "--output-format", "text"].map(String::from).to_vec();
     if let Some(m) = clean_model(&cfg.model)? {
         args.extend(["--model".into(), m]);
     }
+    if quick {
+        // Most of the wait is the agent itself: its long system prompt, MCP
+        // servers and tools. A plain text task needs none of them.
+        let mut fast = args.clone();
+        fast.extend([
+            "--system-prompt".into(),
+            system.into(),
+            "--tools".into(),
+            String::new(),
+            "--strict-mcp-config".into(),
+            "--no-session-persistence".into(),
+            "--effort".into(),
+            "low".into(),
+        ]);
+        match run_cli("claude", &fast, flatten("", messages).trim_start(), cwd) {
+            Err(e) if unknown_flag(&e) => {} // older Claude Code: use the plain call below
+            result => return result,
+        }
+    }
     run_cli("claude", &args, &(flatten(system, messages) + CLI_GUARD), cwd)
 }
 
-fn codex(cfg: &AiConfig, system: &str, messages: &[ChatMessage], cwd: Option<&str>) -> CmdResult<String> {
+fn codex(cfg: &AiConfig, system: &str, messages: &[ChatMessage], cwd: Option<&str>, quick: bool) -> CmdResult<String> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -379,8 +437,21 @@ fn codex(cfg: &AiConfig, system: &str, messages: &[ChatMessage], cwd: Option<&st
     if let Some(m) = clean_model(&cfg.model)? {
         args.extend(["--model".into(), m]);
     }
-    args.push("-".into()); // read the prompt from stdin
-    let stdout = run_cli("codex", &args, &(flatten(system, messages) + CLI_GUARD), cwd)?;
+    let input = flatten(system, messages) + CLI_GUARD;
+    let stdout = if quick {
+        let mut fast = args.clone();
+        fast.extend(["-c".into(), "model_reasoning_effort=\"low\"".into(), "-".into()]);
+        match run_cli("codex", &fast, &input, cwd) {
+            Err(e) if unknown_flag(&e) => {
+                args.push("-".into());
+                run_cli("codex", &args, &input, cwd)?
+            }
+            result => result?,
+        }
+    } else {
+        args.push("-".into()); // read the prompt from stdin
+        run_cli("codex", &args, &input, cwd)?
+    };
     let answer = std::fs::read_to_string(&out_file).unwrap_or(stdout);
     let _ = std::fs::remove_file(&out_file);
     Ok(answer.trim().to_string())
@@ -402,13 +473,14 @@ pub async fn ai_complete(
         return Err("Nothing to send.".into());
     }
     let effort = effort.unwrap_or_else(|| "medium".into());
+    let quick = effort == "low";
     match config.provider.as_str() {
         "anthropic" => anthropic(&config, &system, &messages, &effort).await,
         "openai" | "compatible" => openai(&config, &system, &messages).await,
         "claude-code" => {
-            blocking(move || claude_code(&config, &system, &messages, cwd.as_deref())).await
+            blocking(move || claude_code(&config, &system, &messages, cwd.as_deref(), quick)).await
         }
-        "codex" => blocking(move || codex(&config, &system, &messages, cwd.as_deref())).await,
+        "codex" => blocking(move || codex(&config, &system, &messages, cwd.as_deref(), quick)).await,
         "none" | "" => Err("Choose an AI provider in Settings → AI.".into()),
         other => Err(format!("Unknown AI provider \"{other}\".")),
     }
@@ -463,4 +535,24 @@ pub async fn ai_cli_version(provider: String) -> CmdResult<Option<String>> {
     };
     blocking(move || Ok(run_cli(program, &["--version".into()], "", None).ok().filter(|v| !v.is_empty())))
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nvm_bins;
+
+    #[test]
+    fn nvm_bins_newest_first() {
+        let home = std::env::temp_dir().join(format!("orbe-nvm-test-{}", std::process::id()));
+        for v in ["v18.20.4", "v24.14.1", "v20.9.0", "v24.2.0"] {
+            std::fs::create_dir_all(home.join(".nvm/versions/node").join(v).join("bin")).unwrap();
+        }
+        std::env::remove_var("NVM_DIR");
+        let found: Vec<String> = nvm_bins(&home)
+            .iter()
+            .map(|p| p.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        std::fs::remove_dir_all(&home).ok();
+        assert_eq!(found, ["v24.14.1", "v24.2.0", "v20.9.0", "v18.20.4"]);
+    }
 }

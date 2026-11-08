@@ -2,7 +2,8 @@
 name = "orbe"
 version = "0.1.0"
 description = "Orbe — a beautiful Git client"
-authors = ["Orbe contributors"]
+authors = ["Santiago Petean (https://www.santiago-petean.com/)"]
+homepage = "https://www.santiago-petean.com/"
 edition = "2021"
 rust-version = "1.77"
 

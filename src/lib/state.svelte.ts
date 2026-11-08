@@ -7,6 +7,7 @@ import {
   type Branch,
   type ChatMessage,
   type Commit,
+  type ConflictSide,
   type FileChange,
   type RepoInfo,
   type RepoOperation,
@@ -60,6 +61,10 @@ function loadJSON<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function baseName(path: string): string {
+  return path.split("/").pop() ?? path;
 }
 
 function errorText(e: unknown): string {
@@ -437,7 +442,7 @@ export class RepoTab {
     try {
       const result = await git.mergeInto(this.repo.path, source, target);
       if (result === "conflicts") {
-        this.toast("info", "Merge needs your help", "Some files conflict. Resolve them, stage them, then press Continue.");
+        this.toast("info", "Merge needs your help", "Some files conflict. Resolve them in Changes, then press Continue.");
         this.view = "changes";
       } else {
         this.toast("success", `Merged ${source} into ${target}`);
@@ -454,7 +459,7 @@ export class RepoTab {
     try {
       const result = await git.rebaseOnto(this.repo.path, branch, onto);
       if (result === "conflicts") {
-        this.toast("info", "Rebase paused", "Resolve the conflicts, stage them, then press Continue.");
+        this.toast("info", "Rebase paused", "Resolve the conflicts in Changes, then press Continue.");
         this.view = "changes";
       } else {
         this.toast("success", `Rebased ${branch} onto ${onto}`);
@@ -463,6 +468,34 @@ export class RepoTab {
       this.toast("error", "Couldn't rebase", errorText(e));
     }
     await this.refresh();
+  }
+
+  /** Keep one whole side of a conflicted file (or its deletion) and stage it. */
+  async resolveConflict(file: string, side: ConflictSide) {
+    const ok = await this.mutate((p) => git.resolveConflict(p, file, side), "Couldn't resolve the conflict", `Resolved ${baseName(file)}`);
+    if (ok) this.afterResolve(file);
+    return ok;
+  }
+
+  /** Save a resolved file and mark it resolved by staging it. */
+  async saveResolution(file: string, content: string) {
+    const ok = await this.mutate(
+      async (p) => {
+        await git.writeFile(p, file, content);
+        await git.stage(p, [file]);
+      },
+      "Couldn't save the resolution",
+      `Resolved ${baseName(file)}`,
+    );
+    if (ok) this.afterResolve(file);
+    return ok;
+  }
+
+  /** Move on to the next conflicted file, or say what's left to do. */
+  private afterResolve(done: string) {
+    const next = this.status.find((s) => s.status === "conflicted" && s.path !== done);
+    if (next) this.selectedChange = next;
+    else if (this.operation) this.toast("info", "All conflicts resolved", `Press Continue to finish the ${this.operation}.`);
   }
 
   continueOperation() {

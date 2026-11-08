@@ -2,6 +2,9 @@
   "name": "orbe",
   "private": true,
   "version": "0.1.0",
+  "description": "A calm, beautiful Git client",
+  "author": "Santiago Petean (https://www.santiago-petean.com/)",
+  "homepage": "https://www.santiago-petean.com/",
   "type": "module",
   "scripts": {
     "dev": "vite",
