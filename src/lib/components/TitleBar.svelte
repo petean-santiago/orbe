@@ -33,7 +33,7 @@
   });
 
   /** Only the group holding the focused tab is unfolded; the rest fold into stacks. */
-  const isOpen = (s: Segment) => "group" in s && s.tabs.some((t) => t.id === app.activeId);
+  const isOpen = (s: Segment) => "group" in s && s.group.id === app.openGroupId;
 
   const flatten = (segs: Segment[]) => segs.flatMap((s) => ("tab" in s ? [s.tab] : s.tabs));
 
@@ -229,8 +229,9 @@
               <button
                 class="flex h-8 max-w-[150px] shrink-0 items-center gap-1.5 rounded-lg px-2 text-[12px] font-semibold tracking-[-0.005em] transition-colors hover:bg-surface-2"
                 style:color
-                title="{groupLabel(g)}: group options"
-                onclick={(e) => groupMenu(e, g)}
+                title="{groupLabel(g)}: click to fold, right-click for options"
+                aria-expanded="true"
+                onclick={() => app.toggleGroupFold(g.id)}
                 oncontextmenu={(e) => groupMenu(e, g)}
               >
                 <span class="truncate">{groupLabel(g)}</span>
@@ -261,13 +262,15 @@
               {@const n = seg.tabs.length}
               {@const changes = seg.tabs.reduce((sum, t) => sum + t.status.length, 0)}
               {@const busy = seg.tabs.some((t) => t.loading || t.remoteOp)}
-              <div class="stack-wrap group/stack relative flex" style:--c={color}>
+              {@const current = seg.tabs.some((t) => t.id === app.activeId)}
+              <div class={["stack-wrap group/stack relative flex", current && "current"]} style:--c={color}>
                 {#if n > 2}<span class="stack-card stack-card-3" aria-hidden="true"></span>{/if}
                 {#if n > 1}<span class="stack-card stack-card-2" aria-hidden="true"></span>{/if}
                 <button
                   class={["stack relative flex h-7 items-center gap-2 rounded-[9px] pr-2 pl-2.5 text-[12.5px]", dragging && "shadow-2xl"]}
-                  title="{groupLabel(g)} · {n} repositor{n === 1 ? 'y' : 'ies'}. Click to open ({modKey} ↑/↓), right-click for options"
-                  onclick={() => app.focusGroup(g.id)}
+                  title="{groupLabel(g)} · {n} repositor{n === 1 ? 'y' : 'ies'}. Click to unfold ({modKey} ↑/↓), right-click for options"
+                  aria-expanded="false"
+                  onclick={() => app.toggleGroupFold(g.id)}
                   oncontextmenu={(e) => groupMenu(e, g)}
                 >
                   {#if busy}
@@ -275,7 +278,7 @@
                   {:else}
                     <span class="size-1.5 shrink-0 rounded-full" style:background={color}></span>
                   {/if}
-                  <span class="max-w-[140px] truncate font-medium text-fg-muted transition-colors group-hover/stack:text-fg">{groupLabel(g)}</span>
+                  <span class={["max-w-[140px] truncate font-medium transition-colors group-hover/stack:text-fg", current ? "text-fg" : "text-fg-muted"]}>{groupLabel(g)}</span>
                   <span class="rounded-full px-1.5 text-[10.5px] leading-4 font-semibold tabular-nums" style:color style:background={tint(color, 16)}>
                     {n}
                   </span>
@@ -322,6 +325,13 @@
       inset 0 1px 0 oklch(1 0 0 / 0.06),
       0 2px 6px -2px oklch(0 0 0 / 0.6);
     transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  /* Folded, but you're inside it: a brighter edge and a soft glow say "you are here". */
+  .current .stack {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--c) 75%, transparent),
+      inset 0 1px 0 oklch(1 0 0 / 0.08),
+      0 0 14px -3px color-mix(in oklch, var(--c) 65%, transparent);
   }
   .stack-card {
     position: absolute;

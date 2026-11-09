@@ -747,7 +747,7 @@ class AppState {
    * unfolded; every other group is one stop, landing on its last-used tab.
    */
   stepTab(dir: 1 | -1) {
-    const open = this.active?.groupId;
+    const open = this.openGroupId;
     const seen = new Set<string>();
     const stops: RepoTab[] = [];
     for (const t of this.tabs) {
@@ -773,6 +773,27 @@ class AppState {
   focusGroup(groupId: string) {
     const tab = this.groupFocusTab(groupId);
     if (tab) this.activate(tab.id);
+  }
+
+  /**
+   * The focused tab's group can be folded by hand. Remembered with the tab it
+   * was folded on, so focusing any other tab unfolds things again by itself.
+   */
+  private foldedOn = $state<number | null>(null);
+
+  /** The group shown unfolded in the strip, if any. */
+  get openGroupId() {
+    const g = this.active?.groupId ?? null;
+    return g && this.foldedOn !== this.activeId ? g : null;
+  }
+
+  /** Click on a group: fold or unfold it if you're in it, otherwise jump into it. */
+  toggleGroupFold(groupId: string) {
+    if (this.active?.groupId === groupId) {
+      this.foldedOn = this.openGroupId ? this.activeId : null;
+    } else {
+      this.focusGroup(groupId);
+    }
   }
 
   /** Last tab focused in each group (or in each run of ungrouped tabs), keyed by its first tab. */
