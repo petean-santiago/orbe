@@ -44,13 +44,14 @@ export interface RecentRepo {
 
 /** Colours a tab group can take, tuned to sit well on the dark theme. */
 export const GROUP_COLORS = {
+  // Ordered so consecutive new groups get clearly different hues.
   violet: "oklch(0.72 0.19 300)",
-  blue: "oklch(0.72 0.15 250)",
-  cyan: "oklch(0.78 0.12 205)",
   green: "oklch(0.76 0.16 150)",
-  yellow: "oklch(0.84 0.15 90)",
   orange: "oklch(0.76 0.16 55)",
+  blue: "oklch(0.72 0.15 250)",
   rose: "oklch(0.72 0.19 10)",
+  yellow: "oklch(0.84 0.15 90)",
+  cyan: "oklch(0.8 0.12 195)",
   grey: "oklch(0.7 0.02 300)",
 } as const;
 export type GroupColor = keyof typeof GROUP_COLORS;
@@ -63,7 +64,6 @@ export interface TabGroup {
   id: string;
   name: string;
   color: GroupColor;
-  collapsed: boolean;
   /** Repositories in the group, in tab order. */
   paths: string[];
 }
@@ -719,12 +719,6 @@ class AppState {
   }
 
   activate(id: number) {
-    // Focusing a tab inside a collapsed group opens the group up.
-    const g = this.groupOf(this.tabs.find((t) => t.id === id));
-    if (g?.collapsed) {
-      g.collapsed = false;
-      this.saveGroups();
-    }
     if (this.activeId === id) return;
     this.activeId = id;
     this.rememberBlockFocus();
@@ -748,12 +742,37 @@ class AppState {
     if (next) this.activate(next.id);
   }
 
-  /** Ctrl+←/→: the previous/next tab you can see (tabs in collapsed groups are skipped). */
+  /**
+   * Ctrl+←/→: step through the strip as you see it. Only the active group is
+   * unfolded; every other group is one stop, landing on its last-used tab.
+   */
   stepTab(dir: 1 | -1) {
-    const visible = this.tabs.filter((t) => t.id === this.activeId || !this.groupOf(t)?.collapsed);
-    const idx = visible.findIndex((t) => t.id === this.activeId);
-    const next = visible[(idx + dir + visible.length) % visible.length];
+    const open = this.active?.groupId;
+    const seen = new Set<string>();
+    const stops: RepoTab[] = [];
+    for (const t of this.tabs) {
+      if (!t.groupId || t.groupId === open) stops.push(t);
+      else if (!seen.has(t.groupId)) {
+        seen.add(t.groupId);
+        stops.push(this.groupFocusTab(t.groupId) ?? t);
+      }
+    }
+    const idx = stops.findIndex((t) => t.id === this.activeId);
+    const next = stops[(idx + dir + stops.length) % stops.length];
     if (next && next.id !== this.activeId) this.activate(next.id);
+  }
+
+  /** The tab you last used in a group (its first tab if none yet). */
+  groupFocusTab(groupId: string) {
+    const tabs = this.tabsIn(groupId);
+    const remembered = this.blockFocus.get(groupId);
+    return tabs.find((t) => t.id === remembered) ?? tabs[0];
+  }
+
+  /** Unfold a group by focusing the tab you last used in it. */
+  focusGroup(groupId: string) {
+    const tab = this.groupFocusTab(groupId);
+    if (tab) this.activate(tab.id);
   }
 
   /** Last tab focused in each group (or in each run of ungrouped tabs), keyed by its first tab. */
@@ -895,6 +914,7 @@ class AppState {
       this.tabs = alive.length ? alive : [this.makeTab()];
       if (!activeStillThere) this.activeId = this.tabs[0].id;
     }
+    this.rememberBlockFocus();
     this.saveTabs();
   }
 
@@ -975,7 +995,6 @@ class AppState {
       id: `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       name: name.trim(),
       color: this.nextColor(),
-      collapsed: false,
       paths: [...new Set(paths)],
     };
     this.groups.push(group);
@@ -1005,7 +1024,6 @@ class AppState {
   addToGroup(tab: RepoTab, groupId: string, index?: number) {
     const g = this.findGroup(groupId);
     if (!g) return;
-    g.collapsed = false;
     this.place(tab, groupId, { index });
     this.saveTabs();
   }
@@ -1022,23 +1040,6 @@ class AppState {
     if (!g) return;
     Object.assign(g, patch);
     this.saveGroups();
-  }
-
-  toggleGroup(id: string) {
-    const g = this.findGroup(id);
-    if (!g) return;
-    g.collapsed = !g.collapsed;
-    // Don't leave the focused tab hidden inside a collapsed group.
-    if (g.collapsed && this.active?.groupId === id) {
-      const idx = this.tabs.indexOf(this.active);
-      const outside =
-        this.tabs.slice(idx + 1).find((t) => t.groupId !== id) ??
-        this.tabs.slice(0, idx).reverse().find((t) => t.groupId !== id);
-      if (outside) this.activeId = outside.id;
-      else this.newTab();
-    }
-    this.saveGroups();
-    this.saveTabs();
   }
 
   /** New empty tab at the end of a group, ready to open a repository into. */
@@ -1077,7 +1078,6 @@ class AppState {
     if (!this.tabs.some((t) => t.id === this.activeId)) {
       this.activeId = this.tabs[Math.max(0, Math.min(idx, this.tabs.length) - 1)].id;
     }
-    g.collapsed = false;
     this.saveTabs();
     this.toast("info", `Closed ${g.name || "group"}`, "It's saved. Reopen it any time from a new tab.");
   }
@@ -1093,7 +1093,6 @@ class AppState {
   async openGroup(id: string, { focus = true } = {}) {
     const g = this.findGroup(id);
     if (!g) return;
-    g.collapsed = false;
     const blank = focus && this.active && !this.active.repo && !this.active.groupId ? this.active : null;
     const opening: [RepoTab, string][] = [];
     for (const path of [...g.paths]) {
