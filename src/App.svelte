@@ -39,6 +39,21 @@
     const key = e.key.toLowerCase();
     const handled = () => e.preventDefault();
 
+    // Ctrl+←/→ moves between tabs, Ctrl+↑/↓ between groups. Text fields keep
+    // their own Ctrl+arrow (word jumps), and overlays keep the keyboard.
+    if (key.startsWith("arrow") && !e.shiftKey && !e.altKey) {
+      const el = document.activeElement as HTMLElement | null;
+      const typing = !!el?.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']");
+      const overlay = app.paletteOpen || app.settingsOpen || ui.form || ui.menu || ui.branchSwitcher;
+      if (typing || overlay) return;
+      handled();
+      if (key === "arrowleft") app.stepTab(-1);
+      else if (key === "arrowright") app.stepTab(1);
+      else if (key === "arrowup") app.stepGroup(-1);
+      else app.stepGroup(1);
+      return;
+    }
+
     if (key === "\\" && app.repo) {
       handled();
       settings.value.sidebarMode = ui.sidebarRail ? "open" : "icons";

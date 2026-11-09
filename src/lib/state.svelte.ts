@@ -727,6 +727,7 @@ class AppState {
     }
     if (this.activeId === id) return;
     this.activeId = id;
+    this.rememberBlockFocus();
     this.saveTabs();
     // Pick up anything that changed while the tab was in the background.
     this.active?.refresh();
@@ -745,6 +746,49 @@ class AppState {
     const idx = this.tabs.findIndex((t) => t.id === this.activeId);
     const next = this.tabs[(idx + dir + this.tabs.length) % this.tabs.length];
     if (next) this.activate(next.id);
+  }
+
+  /** Ctrl+←/→: the previous/next tab you can see (tabs in collapsed groups are skipped). */
+  stepTab(dir: 1 | -1) {
+    const visible = this.tabs.filter((t) => t.id === this.activeId || !this.groupOf(t)?.collapsed);
+    const idx = visible.findIndex((t) => t.id === this.activeId);
+    const next = visible[(idx + dir + visible.length) % visible.length];
+    if (next && next.id !== this.activeId) this.activate(next.id);
+  }
+
+  /** Last tab focused in each group (or in each run of ungrouped tabs), keyed by its first tab. */
+  private blockFocus = new Map<string, number>();
+
+  /** The strip as blocks: each group, and each run of ungrouped tabs between them. */
+  private blocks() {
+    const out: { key: string; tabs: RepoTab[] }[] = [];
+    for (const t of this.tabs) {
+      const last = out[out.length - 1];
+      const key = t.groupId ?? `loose-${t.id}`;
+      if (last && (t.groupId ? last.key === t.groupId : last.key.startsWith("loose-"))) last.tabs.push(t);
+      else out.push({ key, tabs: [t] });
+    }
+    return out;
+  }
+
+  /**
+   * Ctrl+↑/↓: jump to the previous/next group (a run of ungrouped tabs counts
+   * as one), landing on the tab you last used there. Collapsed groups open up.
+   */
+  private rememberBlockFocus() {
+    const block = this.blocks().find((b) => b.tabs.some((t) => t.id === this.activeId));
+    if (block) this.blockFocus.set(block.key, this.activeId);
+  }
+
+  stepGroup(dir: 1 | -1) {
+    const blocks = this.blocks();
+    if (blocks.length < 2) return;
+    const idx = blocks.findIndex((b) => b.tabs.some((t) => t.id === this.activeId));
+    this.rememberBlockFocus();
+    const next = blocks[(idx + dir + blocks.length) % blocks.length];
+    const remembered = this.blockFocus.get(next.key);
+    const target = next.tabs.find((t) => t.id === remembered) ?? next.tabs[0];
+    this.activate(target.id);
   }
 
   reorderTabs(tabs: RepoTab[]) {

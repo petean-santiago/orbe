@@ -129,7 +129,7 @@
     role="tab"
     tabindex="0"
     aria-selected={active}
-    title={tab.repo?.path ?? "New tab"}
+    title={[app.groupOf(tab)?.name, tab.repo?.path ?? "New tab"].filter(Boolean).join(" · ")}
     data-tab-id={tab.id}
     onclick={() => app.activate(tab.id)}
     onkeydown={(e) => e.key === "Enter" && app.activate(tab.id)}
@@ -137,23 +137,27 @@
     oncontextmenu={(e) => tabMenu(e, tab)}
     class={[
       "group relative flex h-8 w-full min-w-0 items-center gap-2 rounded-lg pr-1 pl-3 text-[13px] transition-colors duration-150",
-      active ? "glass text-fg" : "text-fg-muted hover:bg-surface-2 hover:text-fg",
+      active ? (color ? "text-fg" : "glass text-fg") : "text-fg-muted hover:bg-surface-2 hover:text-fg",
       dragging && "glass-strong shadow-2xl",
       leaving === tab.id && "opacity-80 outline-1 outline-offset-2 outline-dashed outline-fg-faint",
     ]}
+    style:background={active && color && !dragging ? `linear-gradient(to bottom, ${tint(color, 30)}, ${tint(color, 18)})` : undefined}
+    style:box-shadow={active && color && !dragging ? `inset 0 0 0 1px ${tint(color, 55)}, 0 4px 14px -6px ${tint(color, 60)}` : undefined}
   >
     {#if active}
-      <span class="absolute inset-x-3 -bottom-px h-px bg-gradient-to-r from-transparent via-accent to-transparent"></span>
+      <span
+        class="absolute inset-x-3 -bottom-px h-px bg-gradient-to-r from-transparent via-accent to-transparent"
+        style:--color-accent={color ?? undefined}
+      ></span>
     {/if}
     {#if tab.loading || tab.remoteOp}
       <LoaderCircle size={13} class="shrink-0 animate-spin text-accent" />
     {:else}
+      {@const dot = color ?? "var(--color-accent)"}
       <span
-        class={[
-          "size-2 shrink-0 rounded-full",
-          tab.repo ? (active ? "bg-accent shadow-[0_0_8px_var(--color-accent)]" : !color && "bg-fg-faint/60") : "border border-fg-faint",
-        ]}
-        style:background={tab.repo && !active && color ? color : undefined}
+        class={["size-2 shrink-0 rounded-full", tab.repo ? (!active && !color && "bg-fg-faint/60") : "border border-fg-faint"]}
+        style:background={tab.repo && (active || color) ? (active ? dot : tint(color!, 70)) : undefined}
+        style:box-shadow={tab.repo && active ? `0 0 8px ${dot}` : undefined}
       ></span>
     {/if}
     <span class={["min-w-0 flex-1 truncate", active && "font-semibold"]}>{tab.title}</span>
@@ -196,7 +200,7 @@
       ondragmove={onStripMove}
       ondrop={onStripDrop}
       axis="x"
-      class="min-w-0 gap-1"
+      class="min-w-0 items-center gap-1.5"
       itemClass={(s) => ("tab" in s ? "min-w-0 w-[200px] shrink" : "min-w-0 shrink")}
     >
       {#snippet children(seg, { dragging })}
@@ -211,18 +215,21 @@
             role="group"
             aria-label={groupLabel(seg.group)}
             data-group-id={seg.group.id}
-            class="relative flex h-8 min-w-0 items-center gap-1 rounded-[10px] transition-[background-color,box-shadow] duration-150"
-            style:background={target ? tint(color, 14) : undefined}
-            style:box-shadow={target ? `0 0 0 1.5px ${tint(color, 70)}, 0 0 18px -4px ${tint(color, 60)}` : undefined}
+            class="relative flex h-[38px] min-w-0 items-center gap-1 rounded-[11px] px-[3px] transition-[background-color,box-shadow] duration-150"
+            style:background={tint(color, target ? 18 : hasActive ? 9 : 5)}
+            style:box-shadow={target
+              ? `inset 0 0 0 1.5px ${tint(color, 75)}, 0 0 18px -4px ${tint(color, 60)}`
+              : `inset 0 0 0 1px ${tint(color, hasActive ? 38 : 20)}`}
           >
+            <!-- The group's name; filled in its colour while you're inside it. -->
             <button
               class={[
-                "flex h-6 max-w-[150px] shrink-0 items-center gap-1.5 rounded-md px-2 text-[12px] font-semibold transition-[filter,box-shadow] duration-150 hover:brightness-125",
+                "flex h-6 max-w-[150px] shrink-0 items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-semibold transition-[filter,box-shadow,background-color,color] duration-150 hover:brightness-115",
                 dragging && "shadow-2xl",
               ]}
-              style:color
-              style:background={tint(color, collapsed ? 22 : 16)}
-              style:box-shadow={`inset 0 0 0 1px ${tint(color, 30)}`}
+              style:color={hasActive ? "oklch(0.18 0.03 300)" : color}
+              style:background={hasActive ? color : tint(color, collapsed ? 24 : 18)}
+              style:box-shadow={hasActive ? `0 0 12px -2px ${tint(color, 70)}` : `inset 0 0 0 1px ${tint(color, 32)}`}
               title="{groupLabel(seg.group)} — click to {collapsed ? 'expand' : 'collapse'}, right-click for options"
               aria-expanded={!collapsed}
               onclick={() => app.toggleGroup(seg.group.id)}
@@ -234,7 +241,7 @@
                 <span class="size-2 rounded-full" style:background={color}></span>
               {/if}
               {#if collapsed}
-                <span class="rounded-full px-1 text-[10.5px] leading-4 tabular-nums" style:background={tint(color, 22)}>
+                <span class="rounded-full px-1 text-[10.5px] leading-4 tabular-nums" style:background={tint(color, 24)}>
                   {seg.tabs.length}
                 </span>
               {/if}
@@ -256,12 +263,6 @@
                 {/snippet}
               </Sortable>
             {/if}
-
-            <!-- The group's colour runs under its tabs, like a bracket. -->
-            <span
-              class={["pointer-events-none absolute inset-x-0.5 -bottom-[5px] h-[2px] rounded-full transition-opacity", collapsed && "opacity-0"]}
-              style:background={`linear-gradient(to right, ${color}, ${tint(color, hasActive ? 70 : 35)})`}
-            ></span>
           </div>
         {/if}
       {/snippet}
