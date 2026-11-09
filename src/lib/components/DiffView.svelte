@@ -233,7 +233,7 @@
   {:else if parsed.binary}
     <div class="flex h-full items-center justify-center text-[13px] text-fg-faint">Binary file, no text preview</div>
   {:else}
-    <div class="sticky top-0 z-10 flex items-center gap-3 border-b border-line-soft bg-[oklch(0.08_0.012_320/0.75)] px-4 py-1.5 text-[12px] backdrop-blur-xl">
+    <div class="sticky top-0 z-10 flex items-center gap-3 border-b border-line-soft bg-[oklch(0.08_0.012_320)] px-4 py-1.5 text-[12px]">
       <span class="font-semibold text-added">+{parsed.adds}</span>
       <span class="font-semibold text-deleted">−{parsed.dels}</span>
       <span class="flex h-1.5 w-20 overflow-hidden rounded-full bg-surface-3">

@@ -164,7 +164,7 @@
     {:else}
       <div class="h-full overflow-auto bg-black/25">
         {#if content.truncated}
-          <div class="sticky top-0 z-10 border-b border-line-soft bg-[oklch(0.08_0.012_320/0.8)] px-4 py-1.5 text-[12px] text-modified backdrop-blur-xl">
+          <div class="sticky top-0 z-10 border-b border-line-soft bg-[oklch(0.08_0.012_320)] px-4 py-1.5 text-[12px] text-modified">
             Large file: showing the first {formatBytes(2 * 1024 * 1024)} of {formatBytes(content.size)}
           </div>
         {/if}

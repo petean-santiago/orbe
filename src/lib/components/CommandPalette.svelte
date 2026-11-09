@@ -26,6 +26,7 @@
     GitBranchPlus,
     GitCommitHorizontal,
     GitGraph,
+    Layers,
     ListChecks,
     Plus,
     RefreshCw,
@@ -37,6 +38,7 @@
   import { git, type Branch, type Commit, type FileChange } from "../api";
   import { app } from "../state.svelte";
   import { ui, type Icon } from "../ui.svelte";
+  import { groupLabel, newGroup } from "../tabGroups";
   import { fuzzyMatch, matchScore, modKey, relativeTime, shortDate } from "../format";
   import { tokenize, isItalic, type ThemedToken } from "../highlight";
   import { cloneRepository, createRepository, newBranch, newFile, newFolder, newTag, stashChanges } from "../actions";
@@ -118,6 +120,16 @@
     { id: "a-open", label: "Open repository in new tab…", icon: FolderOpen, keys: `${modKey} O`, run: () => app.openFolder(), description: "Open a folder that contains a Git repository." },
     { id: "a-tab", label: "New tab", icon: Plus, keys: `${modKey} T`, run: () => app.newTab(), description: "Open another repository side by side." },
     { id: "a-settings", label: "Open settings", icon: Settings, keys: `${modKey} ,`, run: () => (app.settingsOpen = true), description: "Colours, fonts, layout and AI." },
+    { id: "a-group", label: "New tab group…", icon: Layers, run: () => newGroup(app.active), description: "Group related repositories so they open together." },
+    ...app.groups
+      .filter((g) => g.paths.length)
+      .map((g) => ({
+        id: `a-group-${g.id}`,
+        label: `Open group: ${groupLabel(g)}`,
+        icon: Layers,
+        run: () => app.openGroup(g.id),
+        description: `${g.paths.length} repositor${g.paths.length === 1 ? "y" : "ies"}, opened side by side.`,
+      })),
   ];
 
   /** Rank by match quality and keep the best `limit`. */

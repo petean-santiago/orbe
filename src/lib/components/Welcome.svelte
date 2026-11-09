@@ -1,10 +1,14 @@
 <script lang="ts">
-  import { Download, Folder, FolderOpen, FolderPlus, LoaderCircle, X } from "@lucide/svelte";
+  import { Download, Ellipsis, Folder, FolderOpen, FolderPlus, Layers, LoaderCircle, Plus, X } from "@lucide/svelte";
   import { cloneRepository, createRepository } from "../actions";
-  import { app } from "../state.svelte";
+  import { app, GROUP_COLORS } from "../state.svelte";
+  import { editGroup, groupLabel, newGroup, savedGroupMenu } from "../tabGroups";
   import { modKey } from "../format";
   import { AUTHOR, isTauri, openAuthorSite } from "../api";
   import Logo from "./Logo.svelte";
+
+  const repoName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const tint = (color: string, pct: number) => `color-mix(in oklch, ${color} ${pct}%, transparent)`;
 
   function ago(ms: number) {
     const mins = Math.round((Date.now() - ms) / 60000);
@@ -16,7 +20,7 @@
   }
 </script>
 
-<div class="relative flex h-full items-center justify-center overflow-hidden">
+<div class="relative flex h-full overflow-x-hidden overflow-y-auto">
   <!-- ambient background -->
   <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_45%_40%_at_50%_32%,oklch(0.5_0.26_330/0.28),transparent_70%)]"></div>
   <div
@@ -25,7 +29,7 @@
     style:background-size="22px 22px"
   ></div>
 
-  <div class="relative flex w-[440px] animate-fade-in flex-col items-center">
+  <div class="relative m-auto flex w-[440px] animate-fade-in flex-col items-center py-12">
     <div class="animate-float">
       <Logo size={132} glow animated />
     </div>
@@ -51,8 +55,68 @@
       or press <span class="kbd">{modKey}</span> <span class="kbd">O</span>
     </p>
 
+    <div class="mt-10 w-full">
+      <div class="mb-2 flex items-center justify-between px-1">
+        <span class="section-label">Groups</span>
+        <button
+          class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-fg-faint transition-colors hover:bg-surface-2 hover:text-fg"
+          title="Group related repositories so you can open them together"
+          onclick={() => newGroup(app.active)}
+        >
+          <Plus size={12} /> New group
+        </button>
+      </div>
+      {#if app.groups.length}
+        <ul class="glass overflow-hidden rounded-2xl">
+          {#each app.groups as g (g.id)}
+            {@const color = GROUP_COLORS[g.color]}
+            {@const open = app.tabsIn(g.id).filter((t) => t.repo).length}
+            <li class="group relative border-b border-line-soft last:border-b-0">
+              <button
+                class="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
+                title={g.paths.join("\n")}
+                onclick={() => (g.paths.length ? app.openGroup(g.id) : editGroup(g))}
+                oncontextmenu={(e) => savedGroupMenu(e, g)}
+              >
+                <span
+                  class="flex size-8 shrink-0 items-center justify-center rounded-md"
+                  style:color
+                  style:background={tint(color, 16)}
+                  style:box-shadow={`inset 0 0 0 1px ${tint(color, 28)}`}
+                >
+                  <Layers size={15} />
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-[13px] font-medium text-fg">{groupLabel(g)}</span>
+                  <span class="block truncate text-[11.5px] text-fg-faint">
+                    {g.paths.length ? g.paths.map(repoName).join(" · ") : "No repositories yet. Click to pick some"}
+                  </span>
+                </span>
+                <span class="text-[11px] text-fg-faint tabular-nums transition-opacity group-hover:opacity-0">
+                  {open ? `${open} open` : `${g.paths.length} repo${g.paths.length === 1 ? "" : "s"}`}
+                </span>
+              </button>
+              <button
+                class="icon-btn absolute top-1/2 right-2.5 size-6 -translate-y-1/2 opacity-0 group-hover:opacity-100"
+                title="Group options"
+                aria-label="Group options"
+                onclick={(e) => savedGroupMenu(e, g)}
+              >
+                <Ellipsis size={14} />
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="glass rounded-2xl px-4 py-3 text-[12px] leading-relaxed text-fg-faint">
+          Keep related repositories together: create a group here, or right-click any tab and choose
+          <span class="text-fg-muted">Add to new group</span>.
+        </p>
+      {/if}
+    </div>
+
     {#if app.recents.length}
-      <div class="mt-10 w-full">
+      <div class="mt-6 w-full">
         <div class="section-label mb-2 px-1">Recent</div>
         <ul class="glass overflow-hidden rounded-2xl">
           {#each app.recents as r (r.path)}

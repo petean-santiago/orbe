@@ -67,6 +67,25 @@
   {#each menu.items as item, i}
     {#if "separator" in item}
       <div class="mx-2 my-1 h-px bg-line-soft"></div>
+    {:else if "swatches" in item}
+      <div class="flex items-center gap-1.5 px-2.5 py-1.5">
+        {#each item.swatches as sw (sw.label)}
+          <button
+            class={[
+              "size-5 rounded-full transition-transform duration-100 hover:scale-115",
+              sw.active && "outline-2 outline-offset-2 outline-fg/80",
+            ]}
+            style:background={sw.color}
+            title={sw.label}
+            aria-label={sw.label}
+            aria-pressed={sw.active}
+            onclick={() => {
+              ui.closeMenu();
+              sw.run();
+            }}
+          ></button>
+        {/each}
+      </div>
     {:else if "header" in item}
       <div class="truncate px-2.5 pt-1.5 pb-1 text-[11px] font-semibold tracking-[0.04em] text-fg-faint">{item.header}</div>
     {:else}

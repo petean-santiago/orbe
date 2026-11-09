@@ -19,14 +19,23 @@
     axis = "y",
     class: className = "",
     itemClass = "",
+    ondragmove,
+    ondrop,
     children,
   }: {
     items: T[];
     key: (item: T) => string | number;
     onreorder: (items: T[]) => void;
+    /**
+     * Called as an item is dragged. Return true while the pointer is over a
+     * foreign drop target (another list, a group) so neighbours stop shifting.
+     */
+    ondragmove?: (item: T, e: PointerEvent) => boolean;
+    /** Called on release. Return true when the drop was handled elsewhere (no reorder). */
+    ondrop?: (item: T, e: PointerEvent) => boolean;
     axis?: "x" | "y";
     class?: string;
-    itemClass?: string;
+    itemClass?: string | ((item: T) => string);
     children: Snippet<[T, { dragging: boolean }]>;
   } = $props();
 
@@ -48,6 +57,11 @@
   function onPointerDown(e: PointerEvent, index: number) {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
+    // Nested lists (tabs inside a tab group): only the innermost one drags.
+    // Flag the event rather than stopping it, so window listeners still see it.
+    const flagged = e as PointerEvent & { sortableClaimed?: boolean };
+    if (flagged.sortableClaimed) return;
+    flagged.sortableClaimed = true;
     const origin = pos(e);
     let started = false;
 
@@ -57,15 +71,19 @@
         if (Math.abs(delta) < THRESHOLD) return;
         started = true;
         rects = els.slice(0, items.length).map((el) => el.getBoundingClientRect());
-        const r = rects[index];
-        const next = rects[index + 1] ?? rects[index - 1];
-        // Distance between consecutive items (size + gap).
-        step = next ? Math.abs(start(next) - start(r)) : size(r);
+        // Neighbours shift by the dragged item's size plus the gap, so items
+        // of different sizes (a whole tab group, say) still line up.
+        const gap = rects.length > 1 ? Math.max(0, start(rects[1]) - start(rects[0]) - size(rects[0])) : 0;
+        step = size(rects[index]) + gap;
         dragIndex = index;
         overIndex = index;
         document.body.style.cursor = "grabbing";
       }
       offset = delta;
+      if (ondragmove?.(items[index], ev)) {
+        overIndex = index;
+        return;
+      }
       const center = start(rects[index]) + size(rects[index]) / 2 + delta;
       let target = index;
       for (let j = index + 1; j < rects.length; j++) {
@@ -77,7 +95,7 @@
       overIndex = target;
     };
 
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
@@ -88,7 +106,9 @@
       settling = true;
       dragIndex = null;
       offset = 0;
-      if (from !== to) {
+      // Always told (so it can clear any highlight); a cancelled drag only reorders nothing.
+      const handled = !!ondrop?.(items[from], ev) || ev.type !== "pointerup";
+      if (!handled && from !== to) {
         const next = items.slice();
         const [moved] = next.splice(from, 1);
         next.splice(to, 0, moved);
@@ -126,7 +146,7 @@
     <div
       bind:this={els[i]}
       role="listitem"
-      class={[itemClass, isDragging && "relative z-20"]}
+      class={[typeof itemClass === "function" ? itemClass(item) : itemClass, isDragging && "relative z-20"]}
       style:transform={d ? (axis === "y" ? `translateY(${d}px)` : `translateX(${d}px)`) : undefined}
       style:transition={isDragging || settling ? "none" : "transform 180ms cubic-bezier(0.22, 1, 0.36, 1)"}
       onpointerdown={(e) => onPointerDown(e, i)}

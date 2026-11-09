@@ -187,7 +187,7 @@
 </script>
 
 {#snippet section(key: "conflicts" | "staged" | "changes", label: string, count: number, actions: import("svelte").Snippet)}
-  <div class="group/section sticky top-0 z-10 flex h-8 items-center gap-1 bg-[oklch(0.1_0.012_320/0.85)] pr-2 pl-1.5 backdrop-blur-md">
+  <div class="group/section sticky top-0 z-10 flex h-8 items-center gap-1 bg-[oklch(0.1_0.012_320)] pr-2 pl-1.5">
     <button class="flex min-w-0 flex-1 items-center gap-1 text-left" onclick={() => (open[key] = !open[key])}>
       <ChevronRight size={13} strokeWidth={2.5} class={["shrink-0 text-fg-faint transition-transform duration-150", open[key] && "rotate-90"]} />
       <span class="section-label truncate px-0">{label}</span>

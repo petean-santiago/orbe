@@ -42,6 +42,32 @@ export interface RecentRepo {
   openedAt: number;
 }
 
+/** Colours a tab group can take, tuned to sit well on the dark theme. */
+export const GROUP_COLORS = {
+  violet: "oklch(0.72 0.19 300)",
+  blue: "oklch(0.72 0.15 250)",
+  cyan: "oklch(0.78 0.12 205)",
+  green: "oklch(0.76 0.16 150)",
+  yellow: "oklch(0.84 0.15 90)",
+  orange: "oklch(0.76 0.16 55)",
+  rose: "oklch(0.72 0.19 10)",
+  grey: "oklch(0.7 0.02 300)",
+} as const;
+export type GroupColor = keyof typeof GROUP_COLORS;
+
+/**
+ * A named set of related repositories. Groups outlive their tabs: closing a
+ * group keeps it (and its paths) so it can be reopened in one click.
+ */
+export interface TabGroup {
+  id: string;
+  name: string;
+  color: GroupColor;
+  collapsed: boolean;
+  /** Repositories in the group, in tab order. */
+  paths: string[];
+}
+
 export interface Toast {
   id: number;
   kind: "success" | "error" | "info";
@@ -54,6 +80,12 @@ type ToastFn = (kind: Toast["kind"], title: string, message?: string) => void;
 const RECENTS_KEY = "orbe.recentRepos";
 const TABS_KEY = "orbe.tabs";
 const DRAFTS_KEY = "orbe.commitDrafts";
+const GROUPS_KEY = "orbe.tabGroups";
+
+function lastIndex<T>(list: T[], test: (item: T) => boolean): number {
+  for (let i = list.length - 1; i >= 0; i--) if (test(list[i])) return i;
+  return -1;
+}
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -82,6 +114,8 @@ export class RepoTab {
 
   repo = $state<RepoInfo | null>(null);
   view = $state<View>("history");
+  /** Tab group this tab belongs to, if any. */
+  groupId = $state<string | null>(null);
 
   commits = $state.raw<Commit[]>([]);
   graph = $state.raw<GraphLayout>({ rows: [], maxLanes: 1 });
@@ -628,6 +662,7 @@ class AppState {
   tabs = $state<RepoTab[]>([]);
   activeId = $state(0);
   recents = $state<RecentRepo[]>(loadJSON(RECENTS_KEY, []));
+  groups = $state<TabGroup[]>(loadJSON(GROUPS_KEY, []));
   paletteOpen = $state(false);
   settingsOpen = $state(false);
   /** URL being cloned, while a clone runs. */
@@ -684,6 +719,12 @@ class AppState {
   }
 
   activate(id: number) {
+    // Focusing a tab inside a collapsed group opens the group up.
+    const g = this.groupOf(this.tabs.find((t) => t.id === id));
+    if (g?.collapsed) {
+      g.collapsed = false;
+      this.saveGroups();
+    }
     if (this.activeId === id) return;
     this.activeId = id;
     this.saveTabs();
@@ -774,6 +815,7 @@ class AppState {
       const id = this.active.id;
       const idx = this.tabs.findIndex((t) => t.id === id);
       const fresh = this.makeTab();
+      fresh.groupId = this.active.groupId;
       this.tabs[idx] = fresh;
       this.activeId = fresh.id;
       this.saveTabs();
@@ -782,15 +824,23 @@ class AppState {
 
   private saveTabs() {
     const paths = this.tabs.map((t) => t.repo?.path ?? null);
+    const groups = this.tabs.map((t) => t.groupId);
     const active = this.tabs.findIndex((t) => t.id === this.activeId);
-    localStorage.setItem(TABS_KEY, JSON.stringify({ paths, active }));
+    localStorage.setItem(TABS_KEY, JSON.stringify({ paths, groups, active }));
+    this.syncGroups();
   }
 
   /** Reopen the tabs from the last session. */
   async restoreTabs() {
-    const saved = loadJSON<{ paths: (string | null)[]; active: number } | null>(TABS_KEY, null);
+    const saved = loadJSON<{ paths: (string | null)[]; groups?: (string | null)[]; active: number } | null>(TABS_KEY, null);
     if (!saved?.paths?.length) return;
-    const tabs = saved.paths.map(() => this.makeTab());
+    const known = new Set(this.groups.map((g) => g.id));
+    const tabs = saved.paths.map((_, i) => {
+      const tab = this.makeTab();
+      const gid = saved.groups?.[i] ?? null;
+      tab.groupId = gid && known.has(gid) ? gid : null;
+      return tab;
+    });
     this.tabs = tabs;
     this.activeId = tabs[Math.max(0, Math.min(saved.active, tabs.length - 1))].id;
     await Promise.all(saved.paths.map((p, i) => (p ? tabs[i].open(p) : Promise.resolve(true))));
@@ -800,6 +850,240 @@ class AppState {
       const activeStillThere = alive.some((t) => t.id === this.activeId);
       this.tabs = alive.length ? alive : [this.makeTab()];
       if (!activeStillThere) this.activeId = this.tabs[0].id;
+    }
+    this.saveTabs();
+  }
+
+  // ---- tab groups -----------------------------------------------------------
+
+  groupOf(tab: RepoTab | undefined | null) {
+    return tab?.groupId ? (this.groups.find((g) => g.id === tab.groupId) ?? null) : null;
+  }
+
+  tabsIn(groupId: string) {
+    return this.tabs.filter((t) => t.groupId === groupId);
+  }
+
+  private findGroup(id: string) {
+    return this.groups.find((g) => g.id === id);
+  }
+
+  private saveGroups() {
+    localStorage.setItem(GROUPS_KEY, JSON.stringify(this.groups));
+  }
+
+  /**
+   * Keep each group's saved paths in step with its tabs. Membership is
+   * explicit: closing a tab never drops a repository from its group; only
+   * removing it does. Open members follow tab order, closed ones keep theirs.
+   */
+  private syncGroups() {
+    for (const g of this.groups) {
+      const open = this.tabsIn(g.id)
+        .map((t) => t.repo?.path)
+        .filter((p): p is string => !!p);
+      if (!open.length) continue;
+      g.paths = [...open, ...g.paths.filter((p) => !open.includes(p))];
+    }
+    this.saveGroups();
+  }
+
+  /**
+   * Move a tab into (or out of) a group, keeping each group's tabs side by side.
+   * `index` places it at a given position among the group's tabs (or, when
+   * leaving, at a position in the whole strip).
+   */
+  private place(tab: RepoTab, groupId: string | null, opts: { keepMembership?: boolean; index?: number } = {}) {
+    const from = this.tabs.indexOf(tab);
+    if (from === -1) return;
+    const oldGroup = tab.groupId;
+    // Leaving a group is an explicit "remove", unless we're just borrowing the tab.
+    if (oldGroup && oldGroup !== groupId && !opts.keepMembership) {
+      const old = this.findGroup(oldGroup);
+      if (old) old.paths = old.paths.filter((p) => p !== tab.repo?.path);
+    }
+    this.tabs.splice(from, 1);
+    let to = from;
+    if (groupId) {
+      const first = this.tabs.findIndex((t) => t.groupId === groupId);
+      const last = lastIndex(this.tabs, (t) => t.groupId === groupId);
+      if (last !== -1) to = opts.index === undefined ? last + 1 : Math.min(first + opts.index, last + 1);
+    } else if (opts.index !== undefined) {
+      to = opts.index;
+    } else if (oldGroup) {
+      // Step out just past the group's remaining tabs.
+      const last = lastIndex(this.tabs, (t) => t.groupId === oldGroup);
+      if (last >= from) to = last + 1;
+    }
+    tab.groupId = groupId;
+    this.tabs.splice(Math.max(0, Math.min(to, this.tabs.length)), 0, tab);
+  }
+
+  private nextColor(): GroupColor {
+    const used = new Set(this.groups.map((g) => g.color));
+    const colors = Object.keys(GROUP_COLORS) as GroupColor[];
+    return colors.find((c) => !used.has(c)) ?? colors[this.groups.length % colors.length];
+  }
+
+  /** Create a group from a set of repositories and open them side by side. */
+  async createGroup(name: string, paths: string[]) {
+    const group: TabGroup = {
+      id: `g${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      name: name.trim(),
+      color: this.nextColor(),
+      collapsed: false,
+      paths: [...new Set(paths)],
+    };
+    this.groups.push(group);
+    this.saveGroups();
+    await this.openGroup(group.id);
+    return this.findGroup(group.id)!;
+  }
+
+  /** Change which repositories belong to a group (and its name). */
+  async editGroup(id: string, name: string, paths: string[]) {
+    const g = this.findGroup(id);
+    if (!g) return;
+    g.name = name.trim();
+    const keep = new Set(paths);
+    // Tabs of repositories no longer in the group step out of it.
+    for (const t of this.tabsIn(id)) {
+      if (t.repo && !keep.has(t.repo.path)) this.place(t, null);
+    }
+    g.paths = [...keep];
+    this.saveGroups();
+    // An open group picks up its new members straight away.
+    if (this.tabsIn(id).length) await this.openGroup(id, { focus: false });
+    else this.saveTabs();
+  }
+
+  /** Put a tab in a group: instant, no questions (used by drag and drop too). */
+  addToGroup(tab: RepoTab, groupId: string, index?: number) {
+    const g = this.findGroup(groupId);
+    if (!g) return;
+    g.collapsed = false;
+    this.place(tab, groupId, { index });
+    this.saveTabs();
+  }
+
+  /** Take a tab out of its group; `index` is where it lands in the strip. */
+  removeFromGroup(tab: RepoTab, index?: number) {
+    if (!tab.groupId) return;
+    this.place(tab, null, { index });
+    this.saveTabs();
+  }
+
+  updateGroup(id: string, patch: Partial<Pick<TabGroup, "name" | "color">>) {
+    const g = this.findGroup(id);
+    if (!g) return;
+    Object.assign(g, patch);
+    this.saveGroups();
+  }
+
+  toggleGroup(id: string) {
+    const g = this.findGroup(id);
+    if (!g) return;
+    g.collapsed = !g.collapsed;
+    // Don't leave the focused tab hidden inside a collapsed group.
+    if (g.collapsed && this.active?.groupId === id) {
+      const idx = this.tabs.indexOf(this.active);
+      const outside =
+        this.tabs.slice(idx + 1).find((t) => t.groupId !== id) ??
+        this.tabs.slice(0, idx).reverse().find((t) => t.groupId !== id);
+      if (outside) this.activeId = outside.id;
+      else this.newTab();
+    }
+    this.saveGroups();
+    this.saveTabs();
+  }
+
+  /** New empty tab at the end of a group, ready to open a repository into. */
+  newTabInGroup(id: string) {
+    const tab = this.newTab();
+    this.addToGroup(tab, id);
+    return tab;
+  }
+
+  /** Pick a folder and open it as part of a group. */
+  async openFolderInGroup(id: string) {
+    const path = await pickFolder();
+    if (!path) return;
+    const existing = this.tabs.find((t) => t.repo?.path === path);
+    if (existing) {
+      this.addToGroup(existing, id);
+      this.activate(existing.id);
+      return;
+    }
+    const tab = this.newTabInGroup(id);
+    await this.open(path);
+    // `open` may have focused an already-open copy instead; drop the spare tab.
+    if (!tab.repo && this.tabs.includes(tab)) this.closeTab(tab.id);
+    const opened = this.active;
+    if (opened?.repo && opened.groupId !== id) this.addToGroup(opened, id);
+  }
+
+  /** Close every tab in the group; the group and its repositories stay saved. */
+  closeGroup(id: string) {
+    this.syncGroups();
+    const g = this.findGroup(id);
+    if (!g) return;
+    const idx = this.tabs.findIndex((t) => t.groupId === id);
+    const remaining = this.tabs.filter((t) => t.groupId !== id);
+    this.tabs = remaining.length ? remaining : [this.makeTab()];
+    if (!this.tabs.some((t) => t.id === this.activeId)) {
+      this.activeId = this.tabs[Math.max(0, Math.min(idx, this.tabs.length) - 1)].id;
+    }
+    g.collapsed = false;
+    this.saveTabs();
+    this.toast("info", `Closed ${g.name || "group"}`, "It's saved. Reopen it any time from a new tab.");
+  }
+
+  /** Forget a group for good. Its open tabs stay open, ungrouped. Ask first! */
+  deleteGroup(id: string) {
+    for (const t of this.tabsIn(id)) t.groupId = null;
+    this.groups = this.groups.filter((g) => g.id !== id);
+    this.saveTabs();
+  }
+
+  /** Open every repository of a group, reusing tabs that are already open. */
+  async openGroup(id: string, { focus = true } = {}) {
+    const g = this.findGroup(id);
+    if (!g) return;
+    g.collapsed = false;
+    const blank = focus && this.active && !this.active.repo && !this.active.groupId ? this.active : null;
+    const opening: [RepoTab, string][] = [];
+    for (const path of [...g.paths]) {
+      const existing = this.tabs.find((t) => t.repo?.path === path);
+      if (existing) {
+        // Borrow it from another group without dropping it from that one.
+        if (existing.groupId !== id) this.place(existing, id, { keepMembership: true });
+        continue;
+      }
+      const tab = this.makeTab();
+      this.tabs.push(tab);
+      this.place(tab, id);
+      opening.push([tab, path]);
+    }
+    // The empty tab we launched from has done its job.
+    if (blank && this.tabs.length > 1) this.tabs = this.tabs.filter((t) => t !== blank);
+    const first = this.tabsIn(id)[0];
+    if (focus && first) this.activeId = first.id;
+    this.saveGroups();
+
+    const results = await Promise.all(opening.map(([tab, path]) => tab.open(path)));
+    // Repositories that can't be opened (a drive unplugged, say) stay in the
+    // group; only their tabs go.
+    const dead = new Set(opening.filter((_, i) => !results[i]).map(([t]) => t));
+    if (dead.size) {
+      this.tabs = this.tabs.filter((t) => !dead.has(t));
+      if (!this.tabs.length) this.tabs.push(this.makeTab());
+      if (!this.tabs.some((t) => t.id === this.activeId)) this.activeId = (this.tabsIn(id)[0] ?? this.tabs[0]).id;
+    }
+    for (const [tab, path] of opening) {
+      if (!tab.repo) continue;
+      // `open` resolves to the repository root; store that.
+      if (tab.repo.path !== path) g.paths = g.paths.map((p) => (p === path ? tab.repo!.path : p));
+      this.rememberRecent(tab.repo);
     }
     this.saveTabs();
   }

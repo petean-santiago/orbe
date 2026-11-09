@@ -17,6 +17,8 @@ export type MenuItem =
       run: () => void;
     }
   | { separator: true }
+  /** A row of colour dots; picking one runs its action. */
+  | { swatches: { color: string; label: string; active?: boolean; run: () => void }[] }
   | { header: string };
 
 export interface MenuState {
@@ -29,8 +31,13 @@ export interface MenuState {
 export interface FormField {
   key: string;
   label: string;
-  kind?: "text" | "textarea" | "checkbox" | "folder";
-  value?: string | boolean;
+  kind?: "text" | "textarea" | "checkbox" | "folder" | "checklist";
+  value?: string | boolean | string[];
+  /** checklist: the choices, and whether the user may browse for more folders. */
+  options?: ChecklistOption[];
+  browse?: boolean;
+  /** checklist: fewest items that must be picked. */
+  min?: number;
   placeholder?: string;
   hint?: string;
   mono?: boolean;
@@ -38,7 +45,13 @@ export interface FormField {
   validate?: (value: string, values: FormValues) => string | null;
 }
 
-export type FormValues = Record<string, string | boolean>;
+export interface ChecklistOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
+export type FormValues = Record<string, string | boolean | string[]>;
 
 export interface FormRequest {
   title: string;
