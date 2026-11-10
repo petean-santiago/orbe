@@ -66,7 +66,32 @@ fn fast_git() -> &'static Option<FastGit> {
 }
 
 fn git_command(repo: &str) -> Command {
-    git_command_with(repo, Command::new("git"))
+    let mut cmd = Command::new("git");
+    if let Some(path) = tool_path() {
+        cmd.env("PATH", path);
+    }
+    git_command_with(repo, cmd)
+}
+
+/// PATH for git commands that may run helpers: credential helpers (`gh`,
+/// Git Credential Manager), hooks that need `node`, SSH askpass programs.
+/// Apps opened from the Dock get a minimal PATH, so the folders those tools
+/// usually live in are appended (after the existing entries, so the same
+/// `git` binary is used as before).
+fn tool_path() -> Option<&'static std::ffi::OsString> {
+    static PATH: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).collect())
+            .unwrap_or_default();
+        for d in crate::ai::extra_bin_dirs() {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        std::env::join_paths(dirs).ok()
+    })
+    .as_ref()
 }
 
 /// Like `git_command`, but for read-only commands: uses the direct binary when we can.
@@ -606,35 +631,191 @@ pub async fn checkout_branch(path: String, name: String, remote: bool) -> CmdRes
     .await
 }
 
-#[tauri::command]
-pub async fn fetch(path: String) -> CmdResult<()> {
-    blocking(move || run_git(&path, &["fetch", "--all", "--prune"]).map(|_| ())).await
+/// Why a fetch, pull or push didn't go through, so the UI can say what to do
+/// instead of showing raw git output.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteError {
+    /// "sso" (the organization needs single sign-on authorization), "auth"
+    /// (sign-in failed), "behind" (the remote has commits you don't),
+    /// "rejected" (a protected branch or server hook refused it), "network",
+    /// "not-pushed" (git finished but commits are still missing on the
+    /// remote) or "other".
+    kind: &'static str,
+    /// Git's own output, for the details view.
+    message: String,
+    /// A link git printed for you to open, such as an SSO authorization page.
+    url: Option<String>,
+    /// The remote's host, e.g. "github.com".
+    host: Option<String>,
+    /// The remote's name, e.g. "origin".
+    remote: Option<String>,
+}
+
+fn has_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| text.contains(n))
+}
+
+/// Sort git's error output into something the UI can act on.
+fn classify_remote_error(message: &str) -> (&'static str, Option<String>) {
+    let lower = message.to_lowercase();
+    let kind = if has_any(&lower, &["saml", "single sign-on", "/sso", " sso ", "sso.", "sso authorization", "sso session"]) {
+        "sso"
+    } else if has_any(
+        &lower,
+        &[
+            "authentication failed",
+            "could not read username",
+            "could not read password",
+            "terminal prompts disabled",
+            "invalid username or password",
+            "invalid credentials",
+            "http basic: access denied",
+            "permission denied (publickey",
+            "permission to ",
+            "returned error: 401",
+            "returned error: 403",
+            "repository not found",
+            "unauthorized",
+            "access denied",
+            "host key verification failed",
+            "denied to ",
+        ],
+    ) {
+        "auth"
+    } else if has_any(&lower, &["protected branch", "gh006", "gh013", "pre-receive hook declined", "[remote rejected]", "push declined"]) {
+        "rejected"
+    } else if lower.contains("[rejected]") || has_any(&lower, &["fetch first", "non-fast-forward", "tip of your current branch is behind"]) {
+        "behind"
+    } else if has_any(
+        &lower,
+        &[
+            "could not resolve host",
+            "connection timed out",
+            "operation timed out",
+            "network is unreachable",
+            "failed to connect",
+            "connection refused",
+            "connection reset",
+            "unable to access",
+        ],
+    ) {
+        "network"
+    } else {
+        "other"
+    };
+
+    // Links git (or the server, via "remote:" lines) printed for the user.
+    let urls: Vec<String> = message
+        .split_whitespace()
+        .filter(|w| w.starts_with("https://"))
+        .map(|w| w.trim_end_matches(|c: char| ".,;:)]>'\"".contains(c)).to_string())
+        .filter(|u| u.len() > "https://".len() && u.len() < 2048)
+        .collect();
+    let url = urls
+        .iter()
+        .find(|u| {
+            let l = u.to_lowercase();
+            l.contains("sso") || l.contains("saml") || l.contains("authoriz") || l.contains("login") || l.contains("device")
+        })
+        .or_else(|| urls.iter().find(|u| !u.contains("docs.github.com") && !u.contains("/help/")))
+        .or_else(|| urls.first())
+        .cloned();
+    (kind, url)
+}
+
+/// The remote a branch talks to: its upstream's remote, else "origin", else the first one.
+fn remote_name(repo: &str) -> Option<String> {
+    let branch = current_branch(repo).unwrap_or_default();
+    if !branch.is_empty() {
+        if let Ok(r) = run_git(repo, &["config", &format!("branch.{branch}.remote")]) {
+            let r = r.trim();
+            if !r.is_empty() && r != "." {
+                return Some(r.to_string());
+            }
+        }
+    }
+    let remotes = run_git(repo, &["remote"]).ok()?;
+    remotes
+        .lines()
+        .find(|r| *r == "origin")
+        .or_else(|| remotes.lines().next())
+        .map(str::to_string)
+}
+
+/// "github.com" from "git@github.com:org/repo.git", "https://user@github.com/org/repo"
+/// or "ssh://git@host:22/repo".
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = rest.split(['/', '\\']).next()?;
+    let host = authority.rsplit('@').next()?;
+    // scp-like "host:path" or "host:port".
+    let host = host.split(':').next()?.trim();
+    (!host.is_empty() && !host.contains(' ')).then(|| host.to_string())
+}
+
+fn remote_error(repo: &str, message: String) -> RemoteError {
+    let (kind, url) = classify_remote_error(&message);
+    let remote = remote_name(repo);
+    let host = remote
+        .as_deref()
+        .and_then(|r| run_git(repo, &["remote", "get-url", r]).ok())
+        .and_then(|u| host_of(u.trim()));
+    RemoteError { kind, message, url, host, remote }
+}
+
+/// Run a git command that talks to a remote, turning failures into a `RemoteError`.
+fn run_remote(repo: &str, args: &[&str]) -> Result<String, RemoteError> {
+    run_git(repo, args).map_err(|e| remote_error(repo, e))
 }
 
 #[tauri::command]
-pub async fn pull(path: String) -> CmdResult<()> {
-    blocking(move || run_git(&path, &["pull"]).map(|_| ())).await
+pub async fn fetch(path: String) -> Result<(), RemoteError> {
+    tauri::async_runtime::spawn_blocking(move || run_remote(&path, &["fetch", "--all", "--prune"]).map(|_| ()))
+        .await
+        .map_err(|e| RemoteError { kind: "other", message: e.to_string(), url: None, host: None, remote: None })?
 }
 
 #[tauri::command]
-pub async fn push(path: String) -> CmdResult<()> {
-    blocking(move || {
+pub async fn pull(path: String) -> Result<(), RemoteError> {
+    tauri::async_runtime::spawn_blocking(move || run_remote(&path, &["pull"]).map(|_| ()))
+        .await
+        .map_err(|e| RemoteError { kind: "other", message: e.to_string(), url: None, host: None, remote: None })?
+}
+
+#[tauri::command]
+pub async fn push(path: String) -> Result<(), RemoteError> {
+    tauri::async_runtime::spawn_blocking(move || {
         let has_upstream = run_git(&path, &["rev-parse", "--abbrev-ref", "@{u}"]).is_ok();
         if has_upstream {
-            run_git(&path, &["push"])?;
+            run_remote(&path, &["push"])?;
         } else {
-            let remotes = run_git(&path, &["remote"])?;
-            let remote = remotes
-                .lines()
-                .find(|r| *r == "origin")
-                .or_else(|| remotes.lines().next())
-                .ok_or_else(|| "This repository has no remote to push to.".to_string())?
-                .to_string();
-            run_git(&path, &["push", "-u", &remote, "HEAD"])?;
+            let remote = remote_name(&path).ok_or_else(|| RemoteError {
+                kind: "other",
+                message: "This repository has no remote to push to.".into(),
+                url: None,
+                host: None,
+                remote: None,
+            })?;
+            run_remote(&path, &["push", "-u", &remote, "HEAD"])?;
+        }
+        // Don't trust the exit code alone: make sure the commits really are on the remote.
+        let left: u32 = run_git(&path, &["rev-list", "--count", "@{u}..HEAD"])
+            .ok()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0);
+        if left > 0 {
+            let mut err = remote_error(
+                &path,
+                format!("Git reported success, but {left} commit{} still not on the remote.", if left == 1 { " is" } else { "s are" }),
+            );
+            err.kind = "not-pushed";
+            return Err(err);
         }
         Ok(())
     })
     .await
+    .map_err(|e| RemoteError { kind: "other", message: e.to_string(), url: None, host: None, remote: None })?
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,29 +1488,79 @@ pub async fn write_file(path: String, file: String, content: String) -> CmdResul
 /// Orbe's author, Santiago Petean.
 pub const AUTHOR_SITE: &str = "https://www.santiago-petean.com/";
 
-/// Open the author's website in the default browser. The URL is fixed on
-/// purpose, so the frontend can't use this to launch arbitrary programs.
+fn open_in_browser(url: &str) -> CmdResult<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = Command::new("xdg-open");
+
+    cmd.arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Couldn't open the browser ({e})."))
+}
+
+/// Open the author's website in the default browser.
 #[tauri::command]
 pub async fn open_author_site() -> CmdResult<()> {
-    blocking(|| {
-        #[cfg(target_os = "macos")]
-        let mut cmd = Command::new("open");
-        #[cfg(target_os = "windows")]
-        let mut cmd = {
-            let mut c = Command::new("rundll32");
-            c.arg("url.dll,FileProtocolHandler");
-            c
-        };
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let mut cmd = Command::new("xdg-open");
+    blocking(|| open_in_browser(AUTHOR_SITE)).await
+}
 
-        cmd.arg(AUTHOR_SITE)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Couldn't open the browser ({e})."))
-    })
-    .await
+/// Open a web page (an SSO authorization page, a remote's site) in the
+/// default browser. Only plain http(s) links are accepted, so this can't be
+/// used to launch programs or open local files.
+#[tauri::command]
+pub async fn open_url(url: String) -> CmdResult<()> {
+    let ok = (url.starts_with("https://") || url.starts_with("http://"))
+        && url.len() < 2048
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\' || c == '`');
+    if !ok {
+        return Err("That doesn't look like a web link.".into());
+    }
+    blocking(move || open_in_browser(&url)).await
+}
+
+#[cfg(test)]
+mod remote_error_tests {
+    use super::{classify_remote_error, host_of};
+
+    #[test]
+    fn github_saml_sso() {
+        let msg = "remote: The 'acme' organization has enabled or enforced SAML SSO.\nremote: To access this repository, visit https://github.com/orgs/acme/sso?authorization_request=ABC123 and try again.\nfatal: unable to access 'https://github.com/acme/app.git/': The requested URL returned error: 403";
+        let (kind, url) = classify_remote_error(msg);
+        assert_eq!(kind, "sso");
+        assert_eq!(url.as_deref(), Some("https://github.com/orgs/acme/sso?authorization_request=ABC123"));
+    }
+
+    #[test]
+    fn ssh_sso_and_auth() {
+        let sso = "ERROR: The 'acme' organization has enabled or enforced SAML SSO. To access this repository, you must use the HTTPS remote with a personal access token or SSH key and password that has been authorized for this organization. Visit https://docs.github.com/articles/authenticating-to-a-github-organization-with-saml-single-sign-on/ for more information.\n\nfatal: Could not read from remote repository.";
+        assert_eq!(classify_remote_error(sso).0, "sso");
+        assert_eq!(classify_remote_error("git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.").0, "auth");
+        assert_eq!(classify_remote_error("fatal: could not read Username for 'https://github.com': terminal prompts disabled").0, "auth");
+    }
+
+    #[test]
+    fn behind_rejected_network() {
+        assert_eq!(classify_remote_error(" ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs").0, "behind");
+        assert_eq!(classify_remote_error("remote: error: GH006: Protected branch update failed for refs/heads/main.\n ! [remote rejected] main -> main (protected branch hook declined)").0, "rejected");
+        assert_eq!(classify_remote_error("fatal: unable to access 'https://x/': Could not resolve host: x").0, "network");
+        assert_eq!(classify_remote_error("fatal: something else").0, "other");
+    }
+
+    #[test]
+    fn hosts() {
+        assert_eq!(host_of("git@github.com:acme/app.git").as_deref(), Some("github.com"));
+        assert_eq!(host_of("https://user@dev.azure.com/acme/_git/app").as_deref(), Some("dev.azure.com"));
+        assert_eq!(host_of("ssh://git@gitlab.acme.io:2222/team/app.git").as_deref(), Some("gitlab.acme.io"));
+    }
 }

@@ -114,6 +114,8 @@ let status: FileChange[] = [
 
 // `?demo&conflict` starts the demo repository half-way through a merge with conflicts.
 const demoConflict = typeof location !== "undefined" && new URLSearchParams(location.search).has("conflict");
+// `?demo&sso` makes the first push fail the way GitHub does when SAML SSO isn't authorized yet.
+let ssoPending = typeof location !== "undefined" && new URLSearchParams(location.search).has("sso");
 let operation: "merge" | null = demoConflict ? "merge" : null;
 
 /** Which sides git kept for each demo conflict (a missing side deleted the file). */
@@ -599,6 +601,17 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
     case "pull":
     case "push":
       await wait(700);
+      if (cmd === "push" && ssoPending) {
+        ssoPending = false;
+        throw {
+          kind: "sso",
+          message:
+            "remote: The 'acme' organization has enabled or enforced SAML SSO.\nremote: To access this repository, visit https://github.com/orgs/acme/sso?authorization_request=DEMO and try again.\nfatal: unable to access 'https://github.com/acme/aurora.git/': The requested URL returned error: 403",
+          url: "https://github.com/orgs/acme/sso?authorization_request=DEMO",
+          host: "github.com",
+          remote: "origin",
+        };
+      }
       if (cmd === "push") branches[0].ahead = 0;
       return undefined as T;
     default:

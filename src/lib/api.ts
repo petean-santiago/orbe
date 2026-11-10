@@ -53,6 +53,28 @@ export interface Branch {
   updated: number;
 }
 
+/** Why a fetch, pull or push didn't go through (see `RemoteError` in git.rs). */
+export type RemoteErrorKind = "sso" | "auth" | "behind" | "rejected" | "network" | "not-pushed" | "other";
+
+export interface RemoteError {
+  kind: RemoteErrorKind;
+  /** Git's own output. */
+  message: string;
+  /** A link git printed, e.g. an SSO authorization page. */
+  url: string | null;
+  /** e.g. "github.com" */
+  host: string | null;
+  /** e.g. "origin" */
+  remote: string | null;
+}
+
+/** Whatever a remote command rejected with, as a `RemoteError`. */
+export function asRemoteError(e: unknown): RemoteError {
+  if (e && typeof e === "object" && "kind" in e && "message" in e) return e as RemoteError;
+  const message = e instanceof Error ? e.message : String(e);
+  return { kind: "other", message, url: null, host: null, remote: null };
+}
+
 /** A git operation stopped half-way, usually for conflicts. */
 export type RepoOperation = "merge" | "rebase" | "cherry-pick" | "revert";
 
@@ -216,6 +238,15 @@ export async function openAuthorSite() {
     return;
   }
   await invoke("open_author_site");
+}
+
+/** Open a web page (http/https only) in the default browser. */
+export async function openUrl(url: string) {
+  if (!isTauri) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  await invoke("open_url", { url });
 }
 
 export async function windowAction(action: "minimize" | "toggleMaximize" | "close") {

@@ -261,8 +261,9 @@ fn nvm_bins(home: &Path) -> Vec<PathBuf> {
     found.into_iter().map(|(_, bin)| bin).collect()
 }
 
-/// GUI apps often start with a minimal PATH, so add the usual install folders.
-fn cli_path() -> Option<std::ffi::OsString> {
+/// Folders where developer tools usually live but that a GUI app's minimal
+/// PATH (launched from Finder, the Dock or a desktop menu) leaves out.
+pub(crate) fn extra_bin_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from);
@@ -288,6 +289,14 @@ fn cli_path() -> Option<std::ffi::OsString> {
     }
     dirs.push("/opt/homebrew/bin".into());
     dirs.push("/usr/local/bin".into());
+    // Git Credential Manager's macOS installer puts its helper here.
+    dirs.push("/usr/local/share/gcm-core".into());
+    dirs
+}
+
+/// GUI apps often start with a minimal PATH, so add the usual install folders.
+fn cli_path() -> Option<std::ffi::OsString> {
+    let mut dirs = extra_bin_dirs();
     if let Some(existing) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&existing));
     }

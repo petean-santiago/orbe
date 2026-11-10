@@ -1,5 +1,6 @@
 import { SvelteSet } from "svelte/reactivity";
 import {
+  asRemoteError,
   chatStore,
   git,
   pickDirectory,
@@ -9,6 +10,7 @@ import {
   type Commit,
   type ConflictSide,
   type FileChange,
+  type RemoteError,
   type RepoInfo,
   type RepoOperation,
   type TreeEntry,
@@ -35,6 +37,16 @@ export interface Conversation {
 
 const MAX_CONVERSATIONS = 50;
 export type RemoteOp = "fetch" | "pull" | "push";
+
+/** A fetch, pull or push that didn't go through, kept until it's fixed or dismissed. */
+export interface RemoteIssue {
+  op: RemoteOp;
+  error: RemoteError;
+  at: number;
+}
+
+/** Problems the user has to act on (sign in, pull first…), so they get the help dialog. */
+const NEEDS_HELP = new Set(["sso", "auth", "behind", "rejected", "not-pushed"]);
 
 export interface RecentRepo {
   path: string;
@@ -100,7 +112,9 @@ function baseName(path: string): string {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
+  return String(e);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +168,13 @@ export class RepoTab {
 
   /** When the remotes were last fetched (ms), for "to pull" freshness. */
   lastFetched = $state<number | null>(null);
+
+  /** The last fetch/pull/push that failed, until it succeeds or is dismissed. */
+  remoteIssue = $state<RemoteIssue | null>(null);
+  /** Whether the help dialog for `remoteIssue` is open. */
+  remoteIssueOpen = $state(false);
+  /** A remote operation has been running long enough that it may be waiting on a browser sign-in. */
+  remoteSlow = $state(false);
 
   /** A merge/rebase stopped half-way (usually for conflicts), or null. */
   operation = $state<RepoOperation | null>(null);
@@ -624,8 +645,15 @@ export class RepoTab {
     try {
       await git.fetch(repo.path);
       this.lastFetched = Date.now();
-    } catch {
-      return; // offline or no access: try again next time, no noise
+      if (this.remoteIssue?.op === "fetch") this.remoteIssue = null;
+    } catch (e) {
+      // Offline: try again next time, no noise. Sign-in problems get a quiet
+      // indicator, so you find out before you try to push.
+      const error = asRemoteError(e);
+      if ((error.kind === "sso" || error.kind === "auth") && !this.remoteIssue) {
+        this.remoteIssue = { op: "fetch", error, at: Date.now() };
+      }
+      return;
     }
     if (this.repo?.path !== repo.path) return;
     await this.refresh();
@@ -639,17 +667,46 @@ export class RepoTab {
   async remote(op: RemoteOp) {
     if (!this.repo || this.remoteOp) return;
     this.remoteOp = op;
+    this.remoteSlow = false;
+    // Credential helpers may be waiting for a sign-in in the browser: say so.
+    const slow = setTimeout(() => (this.remoteSlow = true), 8000);
     const labels = { fetch: "Fetched", pull: "Pulled", push: "Pushed" } as const;
+    let ok = false;
     try {
       await git[op](this.repo.path);
+      ok = true;
       this.lastFetched = Date.now();
+      // Signing in works again, or this very operation now went through.
+      const issue = this.remoteIssue;
+      if (issue && (issue.op === op || issue.error.kind === "sso" || issue.error.kind === "auth")) {
+        this.remoteIssue = null;
+        this.remoteIssueOpen = false;
+      }
       this.toast("success", labels[op], op === "fetch" ? `${this.repo.name} is up to date` : this.headBranch?.name);
     } catch (e) {
-      this.toast("error", `${op[0].toUpperCase()}${op.slice(1)} failed`, errorText(e));
+      const error = asRemoteError(e);
+      const help = NEEDS_HELP.has(error.kind);
+      // A push that didn't happen always stays visible; so does anything needing your action.
+      if (help || op === "push") this.remoteIssue = { op, error, at: Date.now() };
+      if (help) this.remoteIssueOpen = true;
+      else this.toast("error", `${op[0].toUpperCase()}${op.slice(1)} failed`, error.message);
     } finally {
+      clearTimeout(slow);
+      this.remoteSlow = false;
       this.remoteOp = null;
     }
     await this.refresh();
+    return ok;
+  }
+
+  /** The remote has newer commits: bring them in, then push again. */
+  async pullThenPush() {
+    if (await this.remote("pull")) await this.remote("push");
+  }
+
+  dismissRemoteIssue() {
+    this.remoteIssue = null;
+    this.remoteIssueOpen = false;
   }
 }
 

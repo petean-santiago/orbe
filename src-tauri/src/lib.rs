@@ -51,6 +51,7 @@ pub fn run() {
             git::resolve_conflict,
             git::write_file,
             git::open_author_site,
+            git::open_url,
             git::create_tag,
             git::delete_tag,
             git::stash_save,

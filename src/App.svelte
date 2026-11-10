@@ -14,6 +14,8 @@
   import BranchDragGhost from "./lib/components/BranchDragGhost.svelte";
   import OperationBanner from "./lib/components/OperationBanner.svelte";
   import DetachedBanner from "./lib/components/DetachedBanner.svelte";
+  import RemoteIssueBanner from "./lib/components/RemoteIssueBanner.svelte";
+  import RemoteIssueDialog from "./lib/components/RemoteIssueDialog.svelte";
   import { branchDrag } from "./lib/branchDrag.svelte";
   import ChangesView from "./lib/components/ChangesView.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
@@ -104,6 +106,7 @@
   //   &settings=page   open Settings on a page        &view=files  start in Files
   //   &assistant       open the AI panel             &switcher    open the branch switcher
   //   &conflict        start mid-merge with conflicts to resolve
+  //   &sso             the first push fails for SSO, to try the sign-in help
   const params = new URLSearchParams(location.search);
   if (params.get("settings")) ui.settingsPage = params.get("settings") as SettingsPage;
 
@@ -157,6 +160,10 @@
         <OperationBanner />
       {:else if app.active.detached}
         <DetachedBanner />
+      {/if}
+      <RemoteIssueBanner />
+      {#if app.active.remoteIssueOpen && app.active.remoteIssue}
+        <RemoteIssueDialog />
       {/if}
       <div
         class={["relative flex min-h-0 flex-1 gap-2 px-2 pb-2", settings.value.sidebarSide === "right" && "flex-row-reverse"]}

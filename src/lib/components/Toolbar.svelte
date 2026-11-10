@@ -124,11 +124,20 @@
       {@const op = item.id}
       {@const meta = ops[op]}
       {@const n = meta.count()}
-      <button class="btn h-8 px-3" onclick={() => app.remote(op)} disabled={!!app.remoteOp} title={meta.label}>
+      {@const failed = app.active.remoteIssue?.op === op}
+      <button
+        class={["btn relative h-8 px-3", failed && "text-conflict hover:text-conflict"]}
+        onclick={() => app.remote(op)}
+        disabled={!!app.remoteOp}
+        title={failed ? `Last ${op} didn't go through. Click to retry, or see the banner for help.` : meta.label}
+      >
         {#if app.remoteOp === op}
           <LoaderCircle size={15} class="animate-spin text-accent" />
         {:else}
           <meta.icon size={15} />
+        {/if}
+        {#if failed && app.remoteOp !== op}
+          <span class="absolute top-1 left-[22px] size-2 rounded-full bg-conflict shadow-[0_0_8px_var(--color-conflict)]"></span>
         {/if}
         <span class="@max-[880px]:hidden">{meta.label}</span>
         {#if n > 0}
