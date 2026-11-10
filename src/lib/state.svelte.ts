@@ -926,8 +926,18 @@ class AppState {
       return tab;
     });
     this.tabs = tabs;
-    this.activeId = tabs[Math.max(0, Math.min(saved.active, tabs.length - 1))].id;
-    await Promise.all(saved.paths.map((p, i) => (p ? tabs[i].open(p) : Promise.resolve(true))));
+    const first = Math.max(0, Math.min(saved.active, tabs.length - 1));
+    this.activeId = tabs[first].id;
+    // The tab you're looking at first, on its own; then the background tabs a
+    // few at a time. Opening every tab at once started dozens of git processes
+    // that all competed with the one on screen.
+    const open = (i: number) => (saved.paths[i] ? tabs[i].open(saved.paths[i]!) : Promise.resolve(true));
+    await open(first);
+    const queue = saved.paths.map((_, i) => i).filter((i) => i !== first);
+    const worker = async () => {
+      for (let i = queue.shift(); i !== undefined; i = queue.shift()) await open(i);
+    };
+    await Promise.all(Array.from({ length: 3 }, worker));
     // Drop tabs whose repository no longer exists.
     const alive = this.tabs.filter((t, i) => t.repo || !saved.paths[i]);
     if (alive.length !== this.tabs.length) {

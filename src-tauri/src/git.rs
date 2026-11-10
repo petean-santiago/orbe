@@ -17,8 +17,77 @@ type CmdResult<T> = Result<T, String>;
 // Process helpers
 // ---------------------------------------------------------------------------
 
+/// The git binary for read-only commands, and extra PATH entries it needs.
+///
+/// On Windows, `git` on PATH is usually Git for Windows' `cmd\git.exe`: a thin
+/// launcher that sets up PATH/HOME and then starts the real `mingw64\bin\git.exe`.
+/// That is two process creations per call (~50 ms instead of ~20 ms here).
+/// Hot read paths (log, status, branches, diffs) call the real binary directly,
+/// with the same PATH entries the launcher adds. Anything that writes, talks to
+/// a remote or runs hooks keeps going through plain `git`, exactly as before.
+struct FastGit {
+    exe: PathBuf,
+    path_prefix: Option<std::ffi::OsString>,
+}
+
+fn fast_git() -> &'static Option<FastGit> {
+    static FAST: std::sync::OnceLock<Option<FastGit>> = std::sync::OnceLock::new();
+    FAST.get_or_init(|| {
+        #[cfg(windows)]
+        {
+            let path = std::env::var_os("PATH")?;
+            let launcher = std::env::split_paths(&path)
+                .map(|d| d.join("git.exe"))
+                .find(|p| p.is_file())?;
+            let dir = launcher.parent()?;
+            // Only the Git for Windows launcher lives in a folder called "cmd".
+            if !dir.file_name()?.to_string_lossy().eq_ignore_ascii_case("cmd") {
+                return None;
+            }
+            let root = dir.parent()?;
+            ["mingw64", "clangarm64", "mingw32"].iter().find_map(|prefix| {
+                let bin = root.join(prefix).join("bin");
+                let exe = bin.join("git.exe");
+                exe.is_file().then(|| {
+                    let mut dirs = vec![bin, root.join("usr").join("bin")];
+                    dirs.extend(std::env::split_paths(&path));
+                    FastGit {
+                        exe,
+                        path_prefix: std::env::join_paths(dirs).ok(),
+                    }
+                })
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    })
+}
+
 fn git_command(repo: &str) -> Command {
-    let mut cmd = Command::new("git");
+    git_command_with(repo, Command::new("git"))
+}
+
+/// Like `git_command`, but for read-only commands: uses the direct binary when we can.
+fn git_read_command(repo: &str) -> Command {
+    let Some(fast) = fast_git() else {
+        return git_command(repo);
+    };
+    let mut cmd = Command::new(&fast.exe);
+    if let Some(path) = &fast.path_prefix {
+        cmd.env("PATH", path);
+    }
+    // The launcher fills in HOME when it's missing; git reads ~/.gitconfig from it.
+    if std::env::var_os("HOME").is_none() {
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            cmd.env("HOME", profile);
+        }
+    }
+    git_command_with(repo, cmd)
+}
+
+fn git_command_with(repo: &str, mut cmd: Command) -> Command {
     cmd.arg("-C")
         .arg(repo)
         .args(["-c", "core.quotepath=false", "-c", "color.ui=false"])
@@ -41,7 +110,20 @@ fn run_git(repo: &str, args: &[&str]) -> CmdResult<String> {
 }
 
 fn run_git_allow(repo: &str, args: &[&str], ok_codes: &[i32]) -> CmdResult<String> {
-    let output = git_command(repo)
+    finish(git_command(repo), args, ok_codes)
+}
+
+/// Read-only git: never writes the repository, never touches a remote, never runs hooks.
+fn read_git(repo: &str, args: &[&str]) -> CmdResult<String> {
+    read_git_allow(repo, args, &[0])
+}
+
+fn read_git_allow(repo: &str, args: &[&str], ok_codes: &[i32]) -> CmdResult<String> {
+    finish(git_read_command(repo), args, ok_codes)
+}
+
+fn finish(mut cmd: Command, args: &[&str], ok_codes: &[i32]) -> CmdResult<String> {
+    let output = cmd
         .args(args)
         .output()
         .map_err(|e| format!("Could not run git ({e}). Is Git installed and on your PATH?"))?;
@@ -144,17 +226,25 @@ pub struct Branch {
 #[tauri::command]
 pub async fn open_repo(path: String) -> CmdResult<RepoInfo> {
     blocking(move || {
-        let top = run_git(&path, &["rev-parse", "--show-toplevel"])
-            .map_err(|_| "This folder is not a Git repository.".to_string())?
-            .trim()
-            .to_string();
+        // One process for both the work tree and the .git folder.
+        let out = read_git(&path, &["rev-parse", "--show-toplevel", "--absolute-git-dir"])
+            .map_err(|_| "This folder is not a Git repository.".to_string())?;
+        let mut lines = out.lines().map(str::trim);
+        let top = lines.next().unwrap_or_default().to_string();
+        let dir = PathBuf::from(lines.next().unwrap_or_default());
+        if top.is_empty() {
+            return Err("This folder is not a Git repository.".to_string());
+        }
+        remember_git_dir(&top, &dir);
         let name = Path::new(&top)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| top.clone());
-        let head = run_git_allow(&top, &["symbolic-ref", "--short", "-q", "HEAD"], &[0, 1])?
-            .trim()
-            .to_string();
+        // The checked-out branch, straight from .git/HEAD; ask git when it's unusual.
+        let head = match branch_from_head_file(&dir) {
+            Some(head) => head,
+            None => current_branch(&top)?,
+        };
         Ok(RepoInfo {
             path: top,
             name,
@@ -167,7 +257,7 @@ pub async fn open_repo(path: String) -> CmdResult<RepoInfo> {
 #[tauri::command]
 pub async fn get_status(path: String) -> CmdResult<Vec<FileChange>> {
     blocking(move || {
-        let out = run_git(
+        let out = read_git(
             &path,
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         )?;
@@ -236,7 +326,7 @@ pub async fn get_status(path: String) -> CmdResult<Vec<FileChange>> {
 pub async fn get_log(path: String, limit: u32) -> CmdResult<Vec<Commit>> {
     blocking(move || {
         let n = format!("-n{limit}");
-        let result = run_git(
+        let result = read_git(
             &path,
             &[
                 "log",
@@ -288,7 +378,7 @@ pub async fn get_log(path: String, limit: u32) -> CmdResult<Vec<Commit>> {
 #[tauri::command]
 pub async fn get_branches(path: String) -> CmdResult<Vec<Branch>> {
     blocking(move || {
-        let out = run_git(
+        let out = read_git(
             &path,
             &[
                 "for-each-ref",
@@ -353,7 +443,7 @@ pub async fn get_file_diff(
         let ws = ignore_whitespace.unwrap_or(false);
         if untracked {
             // Exit code 1 just means "there are differences".
-            return run_git_allow(
+            return read_git_allow(
                 &path,
                 &["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", &file],
                 &[0, 1],
@@ -368,13 +458,13 @@ pub async fn get_file_diff(
         }
         args.push("--");
         args.push(&file);
-        run_git(&path, &args)
+        read_git(&path, &args)
     })
     .await
 }
 
 fn first_parent(repo: &str, hash: &str) -> CmdResult<Option<String>> {
-    let out = run_git(repo, &["rev-list", "--parents", "-n", "1", hash])?;
+    let out = read_git(repo, &["rev-list", "--parents", "-n", "1", hash])?;
     Ok(out.split_whitespace().nth(1).map(str::to_string))
 }
 
@@ -382,8 +472,8 @@ fn first_parent(repo: &str, hash: &str) -> CmdResult<Option<String>> {
 pub async fn get_commit_files(path: String, hash: String) -> CmdResult<Vec<FileChange>> {
     blocking(move || {
         let out = match first_parent(&path, &hash)? {
-            Some(parent) => run_git(&path, &["diff", "--name-status", "-z", "-M", &parent, &hash])?,
-            None => run_git(
+            Some(parent) => read_git(&path, &["diff", "--name-status", "-z", "-M", &parent, &hash])?,
+            None => read_git(
                 &path,
                 &["diff-tree", "-r", "-z", "-M", "--name-status", "--root", "--no-commit-id", &hash],
             )?,
@@ -449,7 +539,7 @@ pub async fn get_commit_file_diff(
         args.extend(pathspec);
 
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_git(&path, &refs)
+        read_git(&path, &refs)
     })
     .await
 }
@@ -703,7 +793,7 @@ pub async fn clone_repo(url: String, dest: String) -> CmdResult<String> {
 #[tauri::command]
 pub async fn get_staged_diff(path: String) -> CmdResult<String> {
     blocking(move || {
-        run_git(&path, &["diff", "--cached", "--no-ext-diff", "-M", "--stat", "--patch"])
+        read_git(&path, &["diff", "--cached", "--no-ext-diff", "-M", "--stat", "--patch"])
     })
     .await
 }
@@ -712,11 +802,11 @@ pub async fn get_staged_diff(path: String) -> CmdResult<String> {
 #[tauri::command]
 pub async fn get_working_diff(path: String) -> CmdResult<String> {
     blocking(move || {
-        let mut out = run_git(&path, &["diff", "HEAD", "--no-ext-diff", "-M", "--stat", "--patch"])
+        let mut out = read_git(&path, &["diff", "HEAD", "--no-ext-diff", "-M", "--stat", "--patch"])
             .or_else(|_| {
-                run_git(&path, &["diff", "--cached", "--no-ext-diff", "--stat", "--patch"])
+                read_git(&path, &["diff", "--cached", "--no-ext-diff", "--stat", "--patch"])
             })?;
-        let untracked = run_git(&path, &["ls-files", "--others", "--exclude-standard"])?;
+        let untracked = read_git(&path, &["ls-files", "--others", "--exclude-standard"])?;
         if !untracked.trim().is_empty() {
             out.push_str("\nNew untracked files:\n");
             out.push_str(&untracked);
@@ -729,7 +819,7 @@ pub async fn get_working_diff(path: String) -> CmdResult<String> {
 #[tauri::command]
 pub async fn get_commit_patch(path: String, hash: String) -> CmdResult<String> {
     blocking(move || {
-        run_git(
+        read_git(
             &path,
             &["show", "--no-ext-diff", "-M", "--stat", "--patch", "--format=fuller", &hash],
         )
@@ -894,9 +984,44 @@ pub async fn delete_path(path: String, target: String) -> CmdResult<()> {
 // Merge / rebase (drag a branch onto another) and in-progress operations
 // ---------------------------------------------------------------------------
 
+/// Where each open repository keeps its .git folder. It never moves, and
+/// `repo_operation` asks on every refresh, so look it up once.
+fn git_dirs() -> &'static std::sync::Mutex<std::collections::HashMap<String, PathBuf>> {
+    static DIRS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
+        std::sync::OnceLock::new();
+    DIRS.get_or_init(Default::default)
+}
+
+fn remember_git_dir(repo: &str, dir: &Path) {
+    if dir.is_dir() {
+        if let Ok(mut dirs) = git_dirs().lock() {
+            dirs.insert(repo.to_string(), dir.to_path_buf());
+        }
+    }
+}
+
 /// The repository's .git directory, absolute.
 fn git_dir(repo: &str) -> CmdResult<PathBuf> {
-    Ok(PathBuf::from(run_git(repo, &["rev-parse", "--absolute-git-dir"])?.trim()))
+    let cached = git_dirs().lock().ok().and_then(|d| d.get(repo).cloned());
+    if let Some(dir) = cached.filter(|d| d.is_dir()) {
+        return Ok(dir);
+    }
+    let dir = PathBuf::from(read_git(repo, &["rev-parse", "--absolute-git-dir"])?.trim());
+    remember_git_dir(repo, &dir);
+    Ok(dir)
+}
+
+/// The branch HEAD points at, read from `.git/HEAD` without starting git:
+/// `Some("")` when detached, `None` when it's anything unusual (let git decide).
+fn branch_from_head_file(dir: &Path) -> Option<String> {
+    let head = fs::read_to_string(dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: ") {
+        Some(target) => target.strip_prefix("refs/heads/").map(str::to_string),
+        // A detached HEAD holds a commit id.
+        None if head.len() >= 40 && head.chars().all(|c| c.is_ascii_hexdigit()) => Some(String::new()),
+        None => None,
+    }
 }
 
 /// "merge", "rebase", "cherry-pick" or "revert" while one is stopped half-way.
@@ -916,7 +1041,7 @@ fn current_operation(repo: &str) -> CmdResult<Option<&'static str>> {
 }
 
 fn current_branch(repo: &str) -> CmdResult<String> {
-    Ok(run_git_allow(repo, &["symbolic-ref", "--short", "-q", "HEAD"], &[0, 1])?
+    Ok(read_git_allow(repo, &["symbolic-ref", "--short", "-q", "HEAD"], &[0, 1])?
         .trim()
         .to_string())
 }
@@ -1037,7 +1162,7 @@ pub async fn read_file_base64(path: String, file: String) -> CmdResult<String> {
 pub async fn read_blob_base64(path: String, spec: String) -> CmdResult<String> {
     use base64::Engine as _;
     blocking(move || {
-        let size: u64 = run_git(&path, &["cat-file", "-s", &spec])
+        let size: u64 = read_git(&path, &["cat-file", "-s", &spec])
             .map_err(|_| "This version of the file doesn't exist.".to_string())?
             .trim()
             .parse()
@@ -1046,7 +1171,7 @@ pub async fn read_blob_base64(path: String, spec: String) -> CmdResult<String> {
             return Err(format!("This file is {} MB, too large to preview.", size / (1024 * 1024)));
         }
         // Raw bytes: don't go through run_git, which decodes output as text.
-        let output = git_command(&path)
+        let output = git_read_command(&path)
             .args(["cat-file", "blob", &spec])
             .output()
             .map_err(|e| e.to_string())?;
@@ -1094,7 +1219,7 @@ fn describe_rev(repo: &str, rev: &str) -> Option<String> {
 #[tauri::command]
 pub async fn get_conflict_info(path: String, file: String) -> CmdResult<ConflictInfo> {
     blocking(move || {
-        let out = run_git(&path, &["ls-files", "-u", "-z", "--", &file])?;
+        let out = read_git(&path, &["ls-files", "-u", "-z", "--", &file])?;
         let (mut base, mut ours, mut theirs) = (false, false, false);
         // Each entry: "<mode> <object> <stage>\t<path>".
         for entry in out.split('\0').filter(|s| !s.is_empty()) {
