@@ -277,6 +277,19 @@ ${FENCE}
 }
 
 const AI_REPLIES = {
+  conflicts: [
+    "### CONFLICT 1",
+    "decision: merged",
+    "reason: Keeps the new glass styles from current and adds the blur amount from incoming.",
+    "<<<RESOLUTION",
+    '  glass: "frosted" | "clear" | "solid";',
+    "  blur: number;",
+    "RESOLUTION>>>",
+    "",
+    "### CONFLICT 2",
+    "decision: unsure",
+    "reason: Incoming treats glass as on/off, current as a style name; which wording you want is a product choice.",
+  ].join("\n"),
   commit:
     "Refine theme tokens and graph rendering\n\n- Move the accent palette to OKLCH tokens so every surface derives from one hue\n- Reuse free lanes in the commit graph to keep it compact\n- Add the new toast component",
   default: `Here's a summary of your work in progress:\n\n**Theme**: \`app.css\` switches the accent colours to OKLCH, so every accent now derives from a single hue.\n\n**Graph**: \`graph.ts\` reuses free lanes, which keeps wide histories compact.\n\n**New files**: \`Toasts.svelte\` is new and not yet staged.\n\nSuggested next step: commit the theme change separately from the graph change.\n\n${FENCE}bash\ngit add src/lib/components/Toasts.svelte\n${FENCE}`,
@@ -402,6 +415,25 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
     case "get_file_diff": {
       const entry = status.find((s) => s.path === a.file);
       return diffFor(a.file, entry?.status ?? "modified") as T;
+    }
+    case "check_remote_access":
+    case "store_credential":
+      return undefined as T;
+    case "get_commit_people": {
+      const c = commits.find((x) => x.hash === a.hash);
+      const name = c?.author ?? AUTHORS[0][0];
+      const email = c?.email ?? AUTHORS[0][1];
+      const t = c?.timestamp ?? 0;
+      // Every fifth commit looks rebased by someone else, to show the committer row.
+      const other = parseInt(String(a.hash).slice(0, 2), 16) % 5 === 0 ? AUTHORS[1] : null;
+      return {
+        author: name,
+        authorEmail: email,
+        authorTime: t,
+        committer: other ? other[0] : name,
+        committerEmail: other ? other[1] : email,
+        committerTime: other ? t + 3600 : t,
+      } as T;
     }
     case "get_commit_files":
       return commitFiles(a.hash) as T;
@@ -595,6 +627,7 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
       return (a.provider === "claude-code" ? "2.1.0 (Claude Code)" : null) as T;
     case "ai_complete": {
       await wait(1100);
+      if (String(a.system).startsWith("You resolve Git merge conflicts")) return AI_REPLIES.conflicts as T;
       return (String(a.system).startsWith("You write Git commit messages") ? AI_REPLIES.commit : AI_REPLIES.default) as T;
     }
     case "fetch":
@@ -610,6 +643,7 @@ export async function mock<T>(cmd: string, args: Record<string, unknown>): Promi
           url: "https://github.com/orgs/acme/sso?authorization_request=DEMO",
           host: "github.com",
           remote: "origin",
+          transport: "https",
         };
       }
       if (cmd === "push") branches[0].ahead = 0;

@@ -6,8 +6,13 @@
    * (theirs), each with Accept current / incoming / both. "Edit" switches to
    * the full result as plain text for hand-tuning. Files git can't mark up
    * (binary, or deleted on one side) get a "keep this version" choice.
+   *
+   * "Resolve with AI" asks the configured provider to settle the conflicts the
+   * user hasn't picked yet, following the criterion from Settings → AI. Its
+   * answers land as ordinary choices (with the reason shown) to review before
+   * Mark resolved; nothing is saved until then.
    */
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import {
     ArrowDownUp,
@@ -20,8 +25,12 @@
     Pencil,
     RotateCw,
     Rows2,
+    Sparkles,
     Undo2,
   } from "@lucide/svelte";
+  import { aiReady } from "../assistant.svelte";
+  import { resolveWithAi, DECISION_LABELS, type AiConflictAnswer, type AiOutcome } from "../conflictAi";
+  import AiConflictHelp from "./AiConflictHelp.svelte";
   import { confirmAction, git, type ConflictInfo, type ConflictSide } from "../api";
   import { app, type RepoTab } from "../state.svelte";
   import { ui } from "../ui.svelte";
@@ -43,6 +52,12 @@
   let parsed = $state.raw<ParsedConflicts | null>(null);
   let tokens = $state.raw<ThemedToken[][] | null>(null);
   let choices = $state<(Choice | null)[]>([]);
+  /** Text the AI wrote for blocks resolved as "custom". */
+  let custom = $state<(string[] | null)[]>([]);
+  /** What the AI decided for each block, and why (null: not asked, or overridden). */
+  let aiNotes = $state<(AiConflictAnswer | null)[]>([]);
+  let customTokens = $state.raw<Record<number, ThemedToken[][]>>({});
+  let aiBusy = $state(false);
   let editing = $state(false);
   let draft = $state("");
   /** The text Edit started from, to tell whether anything was typed. */
@@ -72,6 +87,7 @@
     loading = true;
     error = null;
     editing = false;
+    seenRev = -1; // re-apply any AI suggestion to the fresh copy
     expanded.clear();
     try {
       const [i, content] = await Promise.all([
@@ -94,6 +110,9 @@
   function setText(value: string | null) {
     parsed = value != null ? parseConflicts(value) : null;
     choices = parsed ? parsed.conflicts.map(() => null) : [];
+    custom = choices.map(() => null);
+    aiNotes = choices.map(() => null);
+    customTokens = {};
     tokens = null;
     if (parsed) {
       const p = parsed;
@@ -105,14 +124,111 @@
 
   function choose(block: ConflictBlock, choice: Choice | null) {
     choices[block.index] = choice;
+    // A pick by hand replaces whatever the AI suggested for this block.
+    custom[block.index] = null;
+    aiNotes[block.index] = null;
+    remember();
   }
 
   function chooseAll(choice: Choice) {
     choices = choices.map(() => choice);
+    custom = choices.map(() => null);
+    aiNotes = choices.map(() => null);
+    remember();
+  }
+
+  /** Revision of the tab's AI suggestion this view last applied or wrote. */
+  let seenRev = -1;
+
+  /**
+   * Once the AI has touched this file, keep its blocks (AI answers and any
+   * picks by hand) on the tab, so switching files doesn't lose them and
+   * "Apply AI" in the merge banner saves what you see here.
+   */
+  function remember() {
+    if (!parsed || text == null) return;
+    if (!tab.aiConflictSuggestions[path] && !aiNotes.some(Boolean)) return;
+    const outcomes: [number, AiOutcome][] = choices.map((choice, i) => [
+      i,
+      {
+        choice,
+        custom: custom[i] ? [...custom[i]!] : null,
+        answer: aiNotes[i] ? { ...aiNotes[i]!, lines: null } : { decision: "unsure", reason: "", lines: null },
+        byHand: !aiNotes[i],
+      },
+    ]);
+    seenRev = Date.now() + Math.random();
+    tab.aiConflictSuggestions = { ...tab.aiConflictSuggestions, [path]: { text, outcomes, rev: seenRev } };
+  }
+
+  /** Apply AI answers to blocks the user hasn't picked. Returns [resolved, left for you]. */
+  function applyOutcomes(outcomes: Iterable<[number, AiOutcome]>): [number, number] {
+    let solved = 0;
+    let left = 0;
+    for (const [i, o] of outcomes) {
+      if (i >= choices.length || choices[i]) continue; // picked by hand meanwhile
+      aiNotes[i] = o.byHand ? null : o.answer;
+      if (!o.choice) {
+        left++;
+        continue;
+      }
+      choices[i] = o.choice;
+      custom[i] = o.custom;
+      solved++;
+      if (o.custom) {
+        const joined = o.custom.join("\n");
+        tokenize(joined, path).then((t) => {
+          if (t && custom[i]?.join("\n") === joined) customTokens = { ...customTokens, [i]: t };
+        });
+      }
+    }
+    return [solved, left];
+  }
+
+  // Answers from "Resolve all with AI" (merge banner): apply them once the
+  // file is loaded, as long as it hasn't changed since they were made.
+  $effect(() => {
+    const pending = tab.aiConflictSuggestions[path];
+    if (!pending || !parsed || editing || loading || pending.rev === seenRev) return;
+    untrack(() => {
+      seenRev = pending.rev;
+      if (pending.text === text) applyOutcomes(pending.outcomes);
+    });
+  });
+
+  /** Let the AI settle every conflict in this file that has no choice yet. */
+  async function resolveAi() {
+    if (!parsed || aiBusy) return;
+    if (!aiReady()) {
+      ui.settingsPage = "ai";
+      app.settingsOpen = true;
+      app.toast("info", "Set up the AI assistant", "Choose a provider to resolve conflicts with AI.");
+      return;
+    }
+    const targets = parsed.conflicts.filter((c) => !choices[c.index]);
+    if (!targets.length) {
+      app.toast("info", "Nothing left to resolve", "Every conflict already has a choice. Undo the ones you want the AI to decide.");
+      return;
+    }
+    const p = parsed;
+    aiBusy = true;
+    try {
+      const result = await resolveWithAi({ path, parsed: p, targets, oursName, theirsName, rebasing, cwd: tab.repo?.path ?? null });
+      if (parsed !== p || editing) return; // the file changed meanwhile
+      const [solved, left] = applyOutcomes(result);
+      remember();
+      if (solved && !left) app.toast("success", `AI resolved ${solved} conflict${solved === 1 ? "" : "s"}`, "Review them, then Mark resolved.");
+      else if (solved) app.toast("info", `AI resolved ${solved} of ${solved + left}`, `${left} left for you: it wasn't confident about ${left === 1 ? "it" : "them"}.`);
+      else app.toast("info", "AI left these to you", "It wasn't confident about any of them. Each conflict says why.");
+    } catch (e) {
+      app.toast("error", "Couldn't resolve with AI", e instanceof Error ? e.message : String(e));
+    } finally {
+      aiBusy = false;
+    }
   }
 
   function startEditing() {
-    draft = draftStart = parsed ? buildResult(parsed, choices) : (text ?? "");
+    draft = draftStart = parsed ? buildResult(parsed, choices, custom) : (text ?? "");
     editing = true;
   }
 
@@ -135,7 +251,7 @@
   }
 
   async function markResolved() {
-    const content = editing ? draft : parsed ? buildResult(parsed, choices) : text;
+    const content = editing ? draft : parsed ? buildResult(parsed, choices, custom) : text;
     if (content == null) return;
     if (hasMarkers(content)) {
       const ok = await confirmAction(
@@ -185,6 +301,7 @@
     theirs: "kept incoming",
     both: "kept both",
     "both-reversed": "kept both, incoming first",
+    custom: "custom",
   };
 
   /** Unchanged lines to show around a conflict before collapsing the rest. */
@@ -204,6 +321,16 @@
 
   const range = (from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, k) => from + k);
 </script>
+
+{#snippet customLine(text: string, toks: ThemedToken[] | undefined)}
+  <div class="flex min-h-[21px]">
+    <span class="w-12 shrink-0 pr-3 text-right text-accent/50 select-none">+</span>
+    <span class="flex-1 pr-6 whitespace-pre"
+      >{#if toks}{#each toks as t, k (k)}<span style:color={t.color} class:italic={isItalic(t)} class:font-semibold={isBold(t)}>{t.content}</span
+          >{/each}{:else}{text}{/if}</span
+    >
+  </div>
+{/snippet}
 
 {#snippet line(i: number, number = true)}
   <div class="flex min-h-[21px]">
@@ -279,6 +406,20 @@
           <button class="btn" onclick={startEditing} title="Edit the result by hand"><Pencil size={13} /> Edit</button>
         {/if}
       {/if}
+      {#if showBlocks}
+        <div class="flex">
+          <button
+            class="btn rounded-r-none border-accent/40 bg-accent-soft text-fg hover:border-accent/70"
+            disabled={aiBusy || editing || !!busy || allResolved || !!tab.aiResolving}
+            title={allResolved ? "Every conflict already has a choice" : "Let AI resolve the conflicts you haven't picked yet"}
+            onclick={resolveAi}
+          >
+            {#if aiBusy}<LoaderCircle size={13} class="animate-spin" />{:else}<Sparkles size={13} class="text-accent" />{/if}
+            {aiBusy ? "Resolving…" : "Resolve with AI"}
+          </button>
+          <AiConflictHelp class="btn rounded-l-none border-l-0 border-accent/40 bg-accent-soft px-1.5 hover:border-accent/70" />
+        </div>
+      {/if}
       <button class="btn" onclick={wholeFileMenu} disabled={!!busy}>Accept all <ChevronDown size={13} /></button>
       {#if showBlocks || editing}
         <button
@@ -347,13 +488,15 @@
               class={[
                 "mx-3 my-2 overflow-hidden rounded-xl border transition-colors",
                 choice ? "border-accent/30 bg-accent-soft/40" : "border-conflict/40 shadow-[0_0_24px_-12px_var(--color-conflict)]",
+                (aiBusy || !!tab.aiResolving) && !choice && "animate-pulse",
               ]}
             >
               <div class="flex flex-wrap items-center gap-1.5 border-b border-line-soft px-3 py-1.5 font-sans text-[12px]">
                 {#if choice}
-                  <Check size={13} class="text-accent" strokeWidth={2.5} />
+                  {@const note = aiNotes[block.index]}
+                  {#if note}<Sparkles size={13} class="text-accent" />{:else}<Check size={13} class="text-accent" strokeWidth={2.5} />{/if}
                   <span class="font-semibold text-fg">Conflict {block.index + 1}</span>
-                  <span class="text-fg-faint">· {CHOICE_NAMES[choice]}</span>
+                  <span class="text-fg-faint">· {note ? `AI ${DECISION_LABELS[note.decision]}` : CHOICE_NAMES[choice]}</span>
                   <span class="flex-1"></span>
                   <button class="btn h-6 px-2 text-[12px]" onclick={() => choose(block, null)}><Undo2 size={12} /> Undo</button>
                 {:else}
@@ -369,7 +512,27 @@
                 {/if}
               </div>
 
-              {#if choice}
+              {#if aiNotes[block.index]?.reason}
+                {@const note = aiNotes[block.index]!}
+                <div
+                  class={[
+                    "flex items-start gap-2 border-b border-line-soft px-3 py-1.5 font-sans text-[12px] leading-snug",
+                    choice ? "text-fg-muted" : "bg-modified/[0.07] text-fg-muted",
+                  ]}
+                >
+                  <Sparkles size={12} class={["mt-[3px] shrink-0", choice ? "text-accent" : "text-modified"]} />
+                  <span>{#if !choice}<span class="font-medium text-modified">AI left this one to you: </span>{/if}{note.reason}</span>
+                </div>
+              {/if}
+              {#if choice === "custom"}
+                <div class="overflow-x-auto border-l-2 border-accent/60 py-1">
+                  {#each custom[block.index] ?? [] as text, k (k)}
+                    {@render customLine(text, customTokens[block.index]?.[k])}
+                  {:else}
+                    <div class="px-4 py-0.5 font-sans text-[12px] text-fg-faint italic">Resolved to nothing (these lines are removed)</div>
+                  {/each}
+                </div>
+              {:else if choice}
                 <div class="overflow-x-auto border-l-2 border-accent/60 py-1">
                   {#each chosenLines(block, choice) as i, k (k)}
                     {@render line(i)}

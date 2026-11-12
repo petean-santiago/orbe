@@ -42,6 +42,16 @@ export interface Commit {
   refs: string[];
 }
 
+/** Who wrote a commit and who committed it (see `CommitPeople` in git.rs). */
+export interface CommitPeople {
+  author: string;
+  authorEmail: string;
+  authorTime: number;
+  committer: string;
+  committerEmail: string;
+  committerTime: number;
+}
+
 export interface Branch {
   name: string;
   kind: "local" | "remote" | "tag";
@@ -66,13 +76,15 @@ export interface RemoteError {
   host: string | null;
   /** e.g. "origin" */
   remote: string | null;
+  /** "https" (Orbe can store a token) or "ssh" (keys), when known. */
+  transport: "https" | "ssh" | null;
 }
 
 /** Whatever a remote command rejected with, as a `RemoteError`. */
 export function asRemoteError(e: unknown): RemoteError {
   if (e && typeof e === "object" && "kind" in e && "message" in e) return e as RemoteError;
   const message = e instanceof Error ? e.message : String(e);
-  return { kind: "other", message, url: null, host: null, remote: null };
+  return { kind: "other", message, url: null, host: null, remote: null, transport: null };
 }
 
 /** A git operation stopped half-way, usually for conflicts. */
@@ -130,6 +142,12 @@ export const git = {
   branches: (path: string) => call<Branch[]>("get_branches", { path }),
   fileDiff: (path: string, file: string, staged: boolean, untracked: boolean, ignoreWhitespace = false) =>
     call<string>("get_file_diff", { path, file, staged, untracked, ignoreWhitespace }),
+  /** Resolves once the remote accepts us (quick, fetches nothing); rejects with a `RemoteError`. */
+  checkRemoteAccess: (path: string) => call<void>("check_remote_access", { path }),
+  /** Save a username + password/token in the computer's Git credential helper. */
+  storeCredential: (path: string, username: string, secret: string) =>
+    call<void>("store_credential", { path, username, secret }),
+  commitPeople: (path: string, hash: string) => call<CommitPeople>("get_commit_people", { path, hash }),
   commitFiles: (path: string, hash: string) => call<FileChange[]>("get_commit_files", { path, hash }),
   commitFileDiff: (path: string, hash: string, file: string, oldPath: string | null, ignoreWhitespace = false) =>
     call<string>("get_commit_file_diff", { path, hash, file, oldPath, ignoreWhitespace }),
@@ -248,6 +266,39 @@ export async function openUrl(url: string) {
   }
   await invoke("open_url", { url });
 }
+
+/** What happened in the in-app sign-in window. */
+export interface AuthWindowEvent {
+  event: "loaded" | "closed";
+  url: string | null;
+}
+
+/**
+ * The in-app sign-in window: SSO pages, the remote's login, token settings,
+ * all inside Orbe instead of the default browser.
+ */
+export const authWindow = {
+  async open(url: string, title?: string) {
+    if (!isTauri) {
+      window.open(url, "_blank", "noopener");
+      return;
+    }
+    await invoke("open_auth_window", { url, title: title ?? null });
+  },
+  async close() {
+    if (isTauri) await invoke("close_auth_window");
+  },
+  /** Bring it to the front; false if it isn't open. */
+  async focus(): Promise<boolean> {
+    return isTauri ? invoke<boolean>("focus_auth_window") : false;
+  },
+  /** Listen for page loads and the window closing. Returns an unsubscribe function. */
+  async listen(cb: (e: AuthWindowEvent) => void): Promise<() => void> {
+    if (!isTauri) return () => {};
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<AuthWindowEvent>("auth-window", (e) => cb(e.payload));
+  },
+};
 
 export async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
   if (!isTauri) return;

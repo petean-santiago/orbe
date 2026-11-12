@@ -1,14 +1,32 @@
 <script lang="ts">
   /**
    * Step-by-step help when a fetch, pull or push didn't go through: SSO
-   * authorization, sign-in, the remote being ahead, a refused push. Opens the
-   * right page in the browser and retries from here.
+   * authorization, sign-in, the remote being ahead, a refused push.
+   *
+   * Sign-in happens inside Orbe: authorization pages open in an in-app window
+   * that's watched until the remote accepts us, then the operation retries by
+   * itself. HTTPS remotes can also take a pasted token.
    */
-  import { Check, Copy, ExternalLink, Globe, KeyRound, LoaderCircle, RotateCw, ShieldAlert, TriangleAlert, X } from "@lucide/svelte";
-  import { fade, fly } from "svelte/transition";
+  import {
+    AppWindow,
+    Check,
+    ChevronRight,
+    Copy,
+    ExternalLink,
+    Globe,
+    KeyRound,
+    LoaderCircle,
+    LogIn,
+    RotateCw,
+    ShieldAlert,
+    TriangleAlert,
+    X,
+  } from "@lucide/svelte";
+  import { fade, fly, slide } from "svelte/transition";
   import { openUrl } from "../api";
   import { app } from "../state.svelte";
   import { remoteIssueText } from "../remoteIssue";
+  import { signIn } from "../signIn.svelte";
 
   const tab = $derived(app.active);
   const issue = $derived(tab.remoteIssue!);
@@ -16,11 +34,28 @@
   const text = $derived(remoteIssueText(issue, tab.headBranch?.name ?? null));
   const host = $derived(error.host);
   const github = $derived(host === "github.com");
-  const ssh = $derived(/publickey|ssh key|git@/i.test(error.message));
+  const gitlab = $derived(!!host && /(^|\.)gitlab\./i.test(host));
+  const ssh = $derived(error.transport === "ssh" || (error.transport !== "https" && /publickey|ssh key|git@/i.test(error.message)));
   const busy = $derived(!!tab.remoteOp);
   const command = $derived(`cd "${tab.repo?.path ?? "."}" && git ${issue.op}`);
+  const waiting = $derived(signIn.status === "waiting" && signIn.isFor(tab));
+
+  /** Where to create a token that works as a Git password, per host. */
+  const tokenPage = $derived(
+    github
+      ? "https://github.com/settings/tokens/new?scopes=repo,workflow&description=Orbe"
+      : gitlab
+        ? `https://${host}/-/user_settings/personal_access_tokens?name=Orbe&scopes=read_repository,write_repository`
+        : host === "bitbucket.org"
+          ? "https://id.atlassian.com/manage-profile/security/api-tokens"
+          : null,
+  );
+  const signInPage = $derived(host ? (github ? "https://github.com/login" : `https://${host}`) : null);
 
   let copied = $state<string | null>(null);
+  let username = $state("");
+  let secret = $state("");
+  let showTerminal = $state(false);
 
   function close() {
     tab.remoteIssueOpen = false;
@@ -32,8 +67,18 @@
     setTimeout(() => copied === key && (copied = null), 1500);
   }
 
-  function open(url: string) {
+  /** Open a page inside Orbe and watch for the remote to accept us. */
+  function openHere(url: string, title: string) {
+    void signIn.show(tab, issue.op, url, title);
+  }
+
+  function openOutside(url: string) {
     openUrl(url).catch((e) => app.toast("error", "Couldn't open the browser", String(e)));
+  }
+
+  async function saveToken(e: SubmitEvent) {
+    e.preventDefault();
+    if (await signIn.saveCredential(tab, issue.op, username, secret)) secret = "";
   }
 
   async function retry() {
@@ -67,6 +112,68 @@
   </div>
 {/snippet}
 
+<!-- The live "finish signing in" card, shown while the in-app window is open. -->
+{#snippet watching()}
+  {#if waiting}
+    <div class="mt-4 flex items-center gap-3 rounded-xl border border-accent/30 bg-accent-soft px-3.5 py-3" transition:slide={{ duration: 160 }}>
+      <LoaderCircle size={16} class="shrink-0 animate-spin text-accent" />
+      <div class="min-w-0 flex-1 text-[12.5px] leading-snug">
+        <div class="font-semibold text-fg">Finish signing in in the Orbe window</div>
+        <div class="text-fg-muted">
+          {signIn.checking ? "Checking with the remote…" : `Orbe will ${issue.op} again by itself as soon as ${host ?? "the remote"} lets you in.`}
+        </div>
+      </div>
+      <button class="btn h-7 shrink-0 px-2.5 text-[12px]" onclick={() => signIn.focus()}><AppWindow size={13} /> Show</button>
+      <button class="icon-btn size-7 shrink-0" title="Stop waiting" onclick={() => signIn.cancel()}><X size={14} /></button>
+    </div>
+  {:else if signIn.notYet && signIn.isFor(tab)}
+    <div class="mt-4 rounded-xl border border-modified/35 bg-modified/10 px-3.5 py-2.5 text-[12.5px] text-fg-muted" transition:slide={{ duration: 160 }}>
+      <span class="font-semibold text-fg">Not signed in yet.</span> The window was closed before {host ?? "the remote"} accepted you. Open it again to continue.
+    </div>
+  {/if}
+{/snippet}
+
+<!-- Paste a username + token; for HTTPS remotes. -->
+{#snippet tokenForm()}
+  <form class="mt-2 space-y-2.5" onsubmit={saveToken}>
+    <label class="flex flex-col gap-1.5">
+      <span class="text-[12px] font-medium text-fg-muted">Username</span>
+      <div class="glass-well flex items-center rounded-lg transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:shadow-[0_0_0_3px_var(--color-accent-soft)]">
+        <input
+          bind:value={username}
+          placeholder={github ? "Your GitHub username" : "Your username"}
+          spellcheck="false"
+          autocomplete="username"
+          class="h-9 w-full bg-transparent px-3 text-[13px] text-fg outline-none placeholder:text-fg-faint"
+        />
+      </div>
+    </label>
+    <label class="flex flex-col gap-1.5">
+      <span class="text-[12px] font-medium text-fg-muted">Token or password</span>
+      <div class="glass-well flex items-center rounded-lg transition-[border-color,box-shadow] focus-within:border-accent/60 focus-within:shadow-[0_0_0_3px_var(--color-accent-soft)]">
+        <input
+          type="password"
+          bind:value={secret}
+          placeholder={github ? "ghp_… or github_pat_…" : "Personal access token"}
+          spellcheck="false"
+          autocomplete="off"
+          class="h-9 w-full bg-transparent px-3 font-mono text-[12.5px] text-fg outline-none placeholder:font-sans placeholder:text-fg-faint"
+        />
+      </div>
+    </label>
+    {#if signIn.credentialError}
+      <p class="text-[12px] leading-snug text-deleted" transition:slide={{ duration: 140 }}>{signIn.credentialError}</p>
+    {/if}
+    <div class="flex items-center justify-between gap-2 pt-0.5">
+      <span class="text-[11.5px] text-fg-faint">Saved in your computer's Git credential manager, not in Orbe.</span>
+      <button type="submit" class="btn-primary h-8 shrink-0 px-3 text-[12.5px]" disabled={signIn.saving || busy || !username.trim() || !secret.trim()}>
+        {#if signIn.saving}<LoaderCircle size={13} class="animate-spin" />{:else}<KeyRound size={13} />{/if}
+        Sign in
+      </button>
+    </div>
+  </form>
+{/snippet}
+
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div role="presentation" class="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-6" transition:fade={{ duration: 140 }} onclick={close}>
   <div
@@ -98,47 +205,102 @@
       {#if error.kind === "sso"}
         <ol class="space-y-4">
           {#snippet s1()}
-            <p>Open the authorization page and sign in with your company account.</p>
-            <button class="btn-ghost mt-2" onclick={() => open(error.url ?? `https://${host ?? "github.com"}`)}>
-              <ExternalLink size={14} />
-              {error.url ? "Open authorization page" : `Open ${host ?? "the remote"}`}
-            </button>
+            <p>Sign in with your company account and approve access for Git. It opens right here in Orbe.</p>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                class="btn-primary h-8 px-3 text-[12.5px]"
+                disabled={busy}
+                onclick={() => openHere(error.url ?? signInPage ?? `https://${host ?? "github.com"}`, `Authorize access · ${host ?? "remote"}`)}
+              >
+                <LogIn size={14} />
+                {error.url ? "Authorize in Orbe" : `Sign in to ${host ?? "the remote"}`}
+              </button>
+              <button class="text-[12px] text-fg-faint hover:text-fg-muted hover:underline" onclick={() => openOutside(error.url ?? `https://${host ?? "github.com"}`)}>
+                or use your browser <ExternalLink size={11} class="inline" />
+              </button>
+            </div>
           {/snippet}
           {@render step(1, s1)}
-          {#snippet s2()}
-            <p>Approve access for Git when your organization asks.</p>
-            {#if github}
-              <p class="mt-1 text-[12.5px] text-fg-faint">
-                {#if ssh}Using an SSH key? Open your <button class="text-accent hover:underline" onclick={() => open("https://github.com/settings/keys")}>SSH keys</button> and choose <em>Configure SSO</em> next to it.
-                {:else}Using a token? Open your <button class="text-accent hover:underline" onclick={() => open("https://github.com/settings/tokens")}>tokens</button> and choose <em>Configure SSO</em> next to it.{/if}
+          {#if github}
+            {#snippet s2()}
+              <p>
+                If GitHub doesn't offer to authorize, enable SSO on the {ssh ? "SSH key" : "token"} Git uses: open your
+                <button class="text-accent hover:underline" onclick={() => openHere(ssh ? "https://github.com/settings/keys" : "https://github.com/settings/tokens", ssh ? "SSH keys · GitHub" : "Tokens · GitHub")}>
+                  {ssh ? "SSH keys" : "tokens"}
+                </button>
+                and choose <em>Configure SSO</em> next to it.
               </p>
-            {/if}
-          {/snippet}
-          {@render step(2, s2)}
+            {/snippet}
+            {@render step(2, s2)}
+          {/if}
           {#snippet s3()}
-            <p>Come back and try again.</p>
+            <p>That's it: Orbe notices when access is granted and retries the {issue.op} for you.</p>
           {/snippet}
-          {@render step(3, s3)}
+          {@render step(github ? 3 : 2, s3)}
         </ol>
+        {@render watching()}
       {:else if error.kind === "auth"}
-        <p>Orbe uses your computer's Git sign-in (Git Credential Manager, the GitHub CLI or your SSH keys), the same one your terminal uses.</p>
-        <ol class="mt-4 space-y-4">
-          {#snippet a1()}
-            <p>Sign in once from a terminal. Git will ask for your credentials or open your browser:</p>
-            {@render code(command, "cmd")}
-            {#if ssh && host}
-              <p class="mt-3 text-[12.5px] text-fg-faint">Using SSH? Check that your key is loaded and accepted:</p>
-              {@render code(`ssh-add -l && ssh -T git@${host}`, "ssh")}
+        {#if ssh}
+          <p>This remote uses SSH, so Git signs in with a key from this computer. Make sure the key is loaded and added to your {host ?? "remote"} account.</p>
+          <ol class="mt-4 space-y-4">
+            {#snippet k1()}
+              <p>Check that your key is loaded and accepted:</p>
+              {@render code(`ssh-add -l && ssh -T git@${host ?? "github.com"}`, "ssh")}
+            {/snippet}
+            {@render step(1, k1)}
+            {#if github || gitlab}
+              {#snippet k2()}
+                <p>Not there? Add your public key to your account:</p>
+                <button
+                  class="btn-ghost mt-2"
+                  onclick={() => openHere(github ? "https://github.com/settings/keys" : `https://${host}/-/user_settings/ssh_keys`, `SSH keys · ${host}`)}
+                >
+                  <KeyRound size={14} /> Open SSH keys in Orbe
+                </button>
+              {/snippet}
+              {@render step(2, k2)}
             {/if}
-          {/snippet}
-          {@render step(1, a1)}
-          {#snippet a2()}
-            <p>Come back and try again.</p>
-          {/snippet}
-          {@render step(2, a2)}
-        </ol>
+          </ol>
+          {@render watching()}
+        {:else}
+          <p>Sign in to {host ?? "the remote"} with a personal access token. Orbe hands it to your computer's Git sign-in, checks it, and retries.</p>
+          <ol class="mt-4 space-y-4">
+            {#if tokenPage}
+              {#snippet t1()}
+                <p>Create a token that can read and write repositories.</p>
+                <button class="btn-ghost mt-2" onclick={() => openHere(tokenPage!, `New token · ${host}`)}>
+                  <AppWindow size={14} /> Create a token in Orbe
+                </button>
+                {#if github}
+                  <p class="mt-1.5 text-[12px] text-fg-faint">If your organization uses SSO, choose <em>Configure SSO</em> on the new token too.</p>
+                {/if}
+              {/snippet}
+              {@render step(1, t1)}
+            {/if}
+            {#snippet t2()}
+              <p>{tokenPage ? "Paste it here:" : "Enter your username and a token (or password):"}</p>
+              {@render tokenForm()}
+            {/snippet}
+            {@render step(tokenPage ? 2 : 1, t2)}
+          </ol>
+          {@render watching()}
+        {/if}
+
+        <button
+          class="mt-5 flex items-center gap-1 text-[12px] text-fg-faint hover:text-fg-muted"
+          onclick={() => (showTerminal = !showTerminal)}
+        >
+          <ChevronRight size={13} class={["transition-transform", showTerminal && "rotate-90"]} />
+          Prefer the terminal?
+        </button>
+        {#if showTerminal}
+          <div transition:slide={{ duration: 160 }}>
+            <p class="mt-1.5 text-[12.5px]">Run this once; Git will ask for your credentials or open your browser. Then retry here.</p>
+            {@render code(command, "cmd")}
+          </div>
+        {/if}
       {:else if error.kind === "rejected" && host}
-        <button class="btn-ghost" onclick={() => open(error.url ?? `https://${host}`)}><ExternalLink size={14} /> Open {host}</button>
+        <button class="btn-ghost" onclick={() => openHere(error.url ?? `https://${host}`, host)}><AppWindow size={14} /> Open {host} in Orbe</button>
       {/if}
 
       <details class="mt-5 rounded-lg border border-line-soft bg-black/20" open={error.kind === "other" || error.kind === "rejected"}>
@@ -153,7 +315,7 @@
     </div>
 
     <footer class="flex items-center justify-end gap-2 border-t border-line-soft px-6 py-4">
-      <button class="btn h-9 px-3" onclick={() => tab.dismissRemoteIssue()}>Dismiss</button>
+      <button class="btn h-9 px-3" onclick={() => (signIn.cancel(), tab.dismissRemoteIssue())}>Dismiss</button>
       <button class="btn-primary h-9" disabled={busy} onclick={retry}>
         {#if busy}<LoaderCircle size={14} class="animate-spin" />{:else}<RotateCw size={14} />{/if}
         {error.kind === "behind" ? "Pull, then push" : `Retry ${issue.op}`}

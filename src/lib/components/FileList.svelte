@@ -11,6 +11,7 @@
     onselect,
     onactivate,
     actions,
+    badge,
   }: {
     files: FileChange[];
     selected?: FileChange | null;
@@ -18,6 +19,8 @@
     /** Double-click / Enter, e.g. to stage or unstage. */
     onactivate?: (f: FileChange) => void;
     actions?: Snippet<[FileChange]>;
+    /** Always-visible marker after the name (actions only show on hover). */
+    badge?: Snippet<[FileChange]>;
   } = $props();
 
   const isSelected = (f: FileChange) =>
@@ -48,6 +51,7 @@
           <span class={sel ? "text-fg" : ""}>{name}</span>
           {#if dir}<span class="ml-1.5 text-[12px] text-fg-faint">{dir}</span>{/if}
         </span>
+        {#if badge}{@render badge(f)}{/if}
         {#if actions}
           <span class="flex items-center opacity-0 transition-opacity group-hover:opacity-100" class:opacity-100={sel}>
             {@render actions(f)}

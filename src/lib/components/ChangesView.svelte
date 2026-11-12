@@ -306,6 +306,24 @@
           {@render section("conflicts", "Merge Conflicts", conflictFiles.length, conflictActions)}
           {#if open.conflicts}
             <FileList files={conflictFiles} selected={app.selectedChange} onselect={select}>
+              {#snippet badge(f)}
+                {@const sug = app.active.aiConflictSuggestions[f.path]}
+                {#if sug}
+                  {@const solved = sug.outcomes.filter(([, o]) => !!o.choice).length}
+                  {@const all = solved === sug.outcomes.length}
+                  <span
+                    class={[
+                      "inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full border px-1.5 font-mono text-[10.5px] tabular-nums",
+                      all ? "border-accent/40 bg-accent-soft text-accent-fg" : "border-modified/40 bg-modified/10 text-modified",
+                    ]}
+                    title={all ? "AI resolved every conflict here; review it or use Apply in the banner" : `AI resolved ${solved} of ${sug.outcomes.length}; the rest need you`}
+                  >
+                    <Sparkles size={10} />{solved}/{sug.outcomes.length}
+                  </span>
+                {:else if app.active.aiResolving}
+                  <LoaderCircle size={12} class="shrink-0 animate-spin text-fg-faint" />
+                {/if}
+              {/snippet}
               {#snippet actions(f)}
                 <button class="icon-btn size-6 hover:text-added" title="Mark resolved as it is" onclick={(e) => (e.stopPropagation(), markResolvedAsIs(f))}>
                   <Check size={14} />

@@ -28,6 +28,8 @@
   import Resizer from "./lib/components/Resizer.svelte";
   import { DEFAULT_SIZES } from "./lib/settings.svelte";
   import Welcome from "./lib/components/Welcome.svelte";
+  import UpdateDialog from "./lib/components/UpdateDialog.svelte";
+  import { updates } from "./lib/updates.svelte";
 
   // Persist + apply preferences whenever they change.
   $effect(() => {
@@ -124,6 +126,15 @@
       if (params.has("settings")) app.settingsOpen = true;
     }
   })();
+
+  void updates.init(); // the running version, for Settings and the update pill
+  // Look for a newer Orbe now and then (Settings → Layout → Updates).
+  $effect(() => {
+    if (!settings.value.checkUpdates || !isTauri) return;
+    void updates.check();
+    const every = setInterval(() => updates.check(), 60 * 60_000); // checks itself at most twice a day
+    return () => clearInterval(every);
+  });
 
   // Fetch in the background so "to pull" counts stay current.
   $effect(() => {
@@ -224,3 +235,7 @@
 {/if}
 
 <Toasts />
+
+{#if updates.dialogOpen}
+  <UpdateDialog />
+{/if}

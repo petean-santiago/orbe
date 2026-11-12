@@ -3,9 +3,11 @@
     Check,
     Columns3,
     LayoutPanelLeft,
+    LoaderCircle,
     Palette,
     PanelLeft,
     PanelRight,
+    RefreshCw,
     RotateCcw,
     Rows2,
     Columns2,
@@ -27,6 +29,7 @@
     settings,
   } from "../settings.svelte";
   import { AUTHOR, confirmAction, openAuthorSite } from "../api";
+  import { updates } from "../updates.svelte";
   import Segmented from "./Segmented.svelte";
   import SortableList from "./SortableList.svelte";
   import Switch from "./Switch.svelte";
@@ -133,7 +136,7 @@
         title={AUTHOR.site}
         onclick={(e) => (e.preventDefault(), openAuthorSite())}
       >
-        Orbe · by <span class="font-medium text-fg-muted">{AUTHOR.name}</span>
+        Orbe{updates.current ? ` ${updates.current}` : ""} · by <span class="font-medium text-fg-muted">{AUTHOR.name}</span>
       </a>
     </nav>
 
@@ -358,6 +361,19 @@
                 />
               {/snippet}
               {@render row("Check for new commits", "Fetch in the background so branches show what's waiting to be pulled. Never changes your files.", fetchCtl)}
+              {#snippet updatesCtl()}
+                <div class="flex items-center gap-2">
+                  <button class="btn h-8 px-3" disabled={updates.checking} onclick={() => updates.check(true)}>
+                    {#if updates.checking}<LoaderCircle size={13} class="animate-spin" />{:else}<RefreshCw size={13} />{/if} Check now
+                  </button>
+                  <Switch bind:checked={s.checkUpdates} label="Check for updates automatically" />
+                </div>
+              {/snippet}
+              {@render row(
+                "Updates",
+                `${updates.current ? `You have Orbe ${updates.current}. ` : ""}${updates.status ?? "Orbe looks for a new version on its website twice a day and tells you; it never installs anything by itself."}`,
+                updatesCtl,
+              )}
               {#snippet datesCtl()}<Switch bind:checked={s.relativeDates} label="Relative dates" />{/snippet}
               {@render row("Relative dates", "“2 days ago” instead of the calendar date.", datesCtl)}
             {:else if page === "arrange"}

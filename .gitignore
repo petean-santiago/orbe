@@ -6,3 +6,4 @@ src-tauri/gen/schemas/
 *.log
 .vscode/*
 !.vscode/extensions.json
+scripts/linux/out/

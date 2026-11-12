@@ -13,8 +13,11 @@
  * reuse one syntax-highlighting pass for the whole file.
  */
 
-/** How a conflict block was resolved. */
-export type Choice = "ours" | "theirs" | "both" | "both-reversed";
+/**
+ * How a conflict block was resolved. "custom" means new text that is neither
+ * side as-is (written by the AI), kept separately per block.
+ */
+export type Choice = "ours" | "theirs" | "both" | "both-reversed" | "custom";
 
 /** Half-open range of line indexes: [from, to). */
 export type Range = [number, number];
@@ -121,7 +124,7 @@ export function parseConflicts(text: string): ParsedConflicts | null {
   return { lines, eol, blocks, conflicts };
 }
 
-/** Line indexes a choice keeps, in order. */
+/** Line indexes a choice keeps, in order ("custom" keeps none of the originals). */
 export function chosenLines(block: ConflictBlock, choice: Choice): number[] {
   const span = ([from, to]: Range) => Array.from({ length: to - from }, (_, k) => from + k);
   switch (choice) {
@@ -133,6 +136,8 @@ export function chosenLines(block: ConflictBlock, choice: Choice): number[] {
       return [...span(block.ours), ...span(block.theirs)];
     case "both-reversed":
       return [...span(block.theirs), ...span(block.ours)];
+    case "custom":
+      return [];
   }
 }
 
@@ -140,7 +145,7 @@ export function chosenLines(block: ConflictBlock, choice: Choice): number[] {
  * The file with each conflict replaced by its choice. Unresolved conflicts
  * keep their markers, so nothing is lost if the user saves early.
  */
-export function buildResult(parsed: ParsedConflicts, choices: (Choice | null)[]): string {
+export function buildResult(parsed: ParsedConflicts, choices: (Choice | null)[], custom: (string[] | null)[] = []): string {
   const out: string[] = [];
   for (const b of parsed.blocks) {
     if (b.kind === "text") {
@@ -148,6 +153,10 @@ export function buildResult(parsed: ParsedConflicts, choices: (Choice | null)[])
       continue;
     }
     const choice = choices[b.index];
+    if (choice === "custom") {
+      out.push(...(custom[b.index] ?? []));
+      continue;
+    }
     const keep = choice ? chosenLines(b, choice) : Array.from({ length: b.range[1] - b.range[0] }, (_, k) => b.range[0] + k);
     for (const i of keep) out.push(parsed.lines[i]);
   }

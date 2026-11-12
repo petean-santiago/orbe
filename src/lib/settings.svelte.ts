@@ -47,6 +47,8 @@ export interface Settings {
   diffIgnoreWhitespace: boolean;
   /** Minutes between background fetches (0 = never), so "to pull" counts stay current. */
   autoFetch: number;
+  /** Look for a newer Orbe on the website twice a day. */
+  checkUpdates: boolean;
   showAvatars: boolean;
   /** Panel sizes the user dragged: pixels, or fractions for the split panes. */
   sizes: PanelSizes;
@@ -58,8 +60,52 @@ export interface Settings {
     /** Model per provider, so switching providers keeps each choice. */
     models: Partial<Record<AiProvider, string>>;
     baseUrl: string;
+    /** How "Resolve with AI" settles merge conflicts. */
+    conflicts: {
+      strategy: ConflictStrategy;
+      /** Extra rules in the user's own words, e.g. "package.json: keep the higher version". */
+      instructions: string;
+    };
   };
 }
+
+export type ConflictStrategy = "combine" | "current" | "incoming" | "careful";
+
+/** The criteria "Resolve with AI" can follow: shown in Settings and in the "?" help. */
+export const CONFLICT_STRATEGIES: Record<ConflictStrategy, { label: string; short: string; description: string; prompt: string }> = {
+  combine: {
+    label: "Combine both",
+    short: "keeps what both sides meant",
+    description:
+      "Keeps the intent of both sides. When the changes are compatible it merges them into one version; when they truly contradict each other, it leaves that conflict for you.",
+    prompt:
+      "Preserve the intent of BOTH sides. If the changes are compatible (different additions, a rename on one side and an edit on the other, etc.), write a merged version that includes both. If they genuinely contradict each other and you can't tell which is right, answer unsure.",
+  },
+  current: {
+    label: "Prefer current",
+    short: "your branch wins real clashes",
+    description:
+      "Merges compatible changes, but when both sides change the same thing in different ways, keeps the current branch's version (the one you're merging into).",
+    prompt:
+      "Merge compatible changes from both sides. When the two sides make contradicting changes to the same thing, keep the CURRENT side's version.",
+  },
+  incoming: {
+    label: "Prefer incoming",
+    short: "the incoming branch wins real clashes",
+    description:
+      "Merges compatible changes, but when both sides change the same thing in different ways, keeps the incoming branch's version (the one being merged in).",
+    prompt:
+      "Merge compatible changes from both sides. When the two sides make contradicting changes to the same thing, keep the INCOMING side's version.",
+  },
+  careful: {
+    label: "Only obvious ones",
+    short: "touches only the safe, obvious conflicts",
+    description:
+      "Resolves only conflicts with a clear answer (one side already contains the other, independent additions, whitespace or formatting). Anything that needs judgement is left for you.",
+    prompt:
+      "Be conservative. Resolve a conflict only when the answer is obvious: one side already contains the other, both sides add independent lines, or the difference is only whitespace/formatting/ordering. For anything that needs a judgement call, answer unsure.",
+  },
+};
 
 export interface PanelSizes {
   sidebar: number;
@@ -309,6 +355,7 @@ const DEFAULTS: Settings = {
   sizes: { ...DEFAULT_SIZES },
   detailsPosition: "bottom",
   relativeDates: true,
+  checkUpdates: true,
   diffMode: "unified",
   diffIgnoreWhitespace: false,
   autoFetch: 15,
@@ -339,6 +386,7 @@ const DEFAULTS: Settings = {
     provider: "none",
     models: {},
     baseUrl: "http://localhost:11434/v1",
+    conflicts: { strategy: "combine", instructions: "" },
   },
 };
 
@@ -385,6 +433,8 @@ function load(): Settings {
     merged.columns = mergeList(raw.columns, DEFAULTS.columns);
     merged.toolbar = mergeList(raw.toolbar, DEFAULTS.toolbar);
     merged.ai = { ...structuredClone(DEFAULTS.ai), ...(raw.ai ?? {}) };
+    merged.ai.conflicts = { ...structuredClone(DEFAULTS.ai.conflicts), ...(raw.ai?.conflicts ?? {}) };
+    if (!(merged.ai.conflicts.strategy in CONFLICT_STRATEGIES)) merged.ai.conflicts.strategy = DEFAULTS.ai.conflicts.strategy;
     if (merged.ai.provider !== "none" && !(merged.ai.provider in AI_PROVIDERS))
       merged.ai.provider = "none";
     return merged;

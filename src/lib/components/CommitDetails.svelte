@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Check, Copy, GitCommitHorizontal, GitMerge, Sparkles, X } from "@lucide/svelte";
+  import { Check, Copy, GitCommitHorizontal, GitMerge, Mail, Sparkles, X } from "@lucide/svelte";
   import { explainCommit } from "../assistant.svelte";
-  import { git, type Commit, type FileChange } from "../api";
+  import { git, type Commit, type CommitPeople, type FileChange } from "../api";
   import { app } from "../state.svelte";
   import { fullDate, relativeTime } from "../format";
   import Avatar from "./Avatar.svelte";
@@ -26,6 +26,37 @@
   let diff = $state<string | null>(null);
   let loadingDiff = $state(false);
   let copied = $state(false);
+  let people = $state<CommitPeople | null>(null);
+  /** Which email was just copied ("author" | "committer"), for the check mark. */
+  let copiedEmail = $state<string | null>(null);
+
+  // Who committed it (can differ from the author), loaded on demand.
+  $effect(() => {
+    const repo = app.repo;
+    const hash = commit.hash;
+    people = null;
+    if (!repo) return;
+    let cancelled = false;
+    git
+      .commitPeople(repo.path, hash)
+      .then((p) => !cancelled && (people = p))
+      .catch(() => {});
+    return () => (cancelled = true);
+  });
+
+  const authorEmail = $derived(people?.authorEmail ?? commit.email);
+  /** Someone else committed it (rebase, cherry-pick, web merge…). */
+  const otherCommitter = $derived(
+    people && (people.committer !== people.author || people.committerEmail.toLowerCase() !== people.authorEmail.toLowerCase())
+      ? people
+      : null,
+  );
+
+  async function copyEmail(email: string, key: string) {
+    await navigator.clipboard.writeText(email);
+    copiedEmail = key;
+    setTimeout(() => copiedEmail === key && (copiedEmail = null), 1400);
+  }
 
   // Load the changed files whenever the commit changes.
   $effect(() => {
@@ -69,6 +100,18 @@
   );
 </script>
 
+{#snippet email(value: string, key: string)}
+  <button
+    class="selectable group inline-flex min-w-0 items-center gap-1 truncate text-[12px] text-fg-faint transition-colors hover:text-accent-fg"
+    title="Copy email"
+    onclick={() => copyEmail(value, key)}
+  >
+    <Mail size={11} class="shrink-0 opacity-70" />
+    <span class="truncate">{value}</span>
+    {#if copiedEmail === key}<Check size={11} class="shrink-0 text-added" />{:else}<Copy size={10} class="shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />{/if}
+  </button>
+{/snippet}
+
 <div class={["flex h-full min-h-0", vertical && "flex-col"]} bind:clientWidth={width}>
   <div
     class={["flex shrink-0 flex-col border-line-soft", vertical ? "max-h-[45%] border-b" : "border-r"]}
@@ -87,12 +130,30 @@
       <div class="mt-3 flex items-center gap-2.5">
         <Avatar name={commit.author} email={commit.email} size={28} />
         <div class="min-w-0 leading-tight">
-          <div class="truncate text-[13px] font-medium text-fg">{commit.author}</div>
+          <div class="flex min-w-0 items-baseline gap-1.5">
+            <span class="shrink-0 truncate text-[13px] font-medium text-fg">{commit.author}</span>
+            {#if authorEmail}
+              {@render email(authorEmail, "author")}
+            {/if}
+          </div>
           <div class="truncate text-[12px] text-fg-faint" title={fullDate(commit.timestamp)}>
             {relativeTime(commit.timestamp)} · {fullDate(commit.timestamp)}
           </div>
         </div>
       </div>
+      {#if otherCommitter}
+        <div class="mt-2.5 flex items-center gap-2 rounded-lg border border-line-soft bg-surface-2/60 px-2.5 py-1.5">
+          <Avatar name={otherCommitter.committer} email={otherCommitter.committerEmail} size={18} />
+          <div class="flex min-w-0 flex-1 items-baseline gap-1.5 text-[12px] leading-tight">
+            <span class="shrink-0 text-fg-faint">Committed by</span>
+            <span class="shrink-0 truncate font-medium text-fg-muted">{otherCommitter.committer}</span>
+            {@render email(otherCommitter.committerEmail, "committer")}
+          </div>
+          <span class="shrink-0 text-[11.5px] text-fg-faint" title={fullDate(otherCommitter.committerTime)}>
+            {relativeTime(otherCommitter.committerTime)}
+          </span>
+        </div>
+      {/if}
       <div class="mt-3 flex flex-wrap items-center gap-1.5 text-[12px]">
         <button
           class="inline-flex h-6 items-center gap-1.5 rounded-sm border border-line bg-surface-2 px-2 font-mono text-fg-muted transition-colors hover:text-fg"

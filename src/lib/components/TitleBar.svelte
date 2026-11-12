@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { LoaderCircle, Plus, Settings, X } from "@lucide/svelte";
+  import { ArrowUpCircle, LoaderCircle, Plus, Settings, X } from "@lucide/svelte";
+  import { updates } from "../updates.svelte";
   import { app, GROUP_COLORS, type RepoTab, type TabGroup } from "../state.svelte";
   import { isMac, modKey } from "../format";
   import { groupLabel, groupMenu, tabMenu } from "../tabGroups";
@@ -299,6 +300,16 @@
   </div>
 
   <div data-tauri-drag-region class="h-full min-w-6 flex-1"></div>
+
+  {#if updates.available}
+    <button
+      class="mr-1 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-accent/40 bg-accent-soft px-2.5 text-[12px] font-medium text-fg transition-colors hover:border-accent/70"
+      title="Orbe {updates.available.version} is available"
+      onclick={() => (updates.dialogOpen = true)}
+    >
+      <ArrowUpCircle size={14} class="text-accent" /> Update {updates.available.version}
+    </button>
+  {/if}
 
   <button
     class="icon-btn size-8 shrink-0 rounded-lg"

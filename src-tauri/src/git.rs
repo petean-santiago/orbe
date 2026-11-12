@@ -493,6 +493,43 @@ fn first_parent(repo: &str, hash: &str) -> CmdResult<Option<String>> {
     Ok(out.split_whitespace().nth(1).map(str::to_string))
 }
 
+/// Who wrote a commit and who actually committed it (they differ after a
+/// rebase, cherry-pick, amend by someone else, or a merge done on a web UI).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitPeople {
+    author: String,
+    author_email: String,
+    author_time: i64,
+    committer: String,
+    committer_email: String,
+    committer_time: i64,
+}
+
+/// Loaded on demand for the commit details, so the big log stays lean.
+#[tauri::command]
+pub async fn get_commit_people(path: String, hash: String) -> CmdResult<CommitPeople> {
+    blocking(move || {
+        let out = read_git(
+            &path,
+            &["show", "-s", "--format=%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct", &hash, "--"],
+        )?;
+        let f: Vec<&str> = out.trim_end_matches(['\n', '\r']).split('\x1f').collect();
+        if f.len() < 6 {
+            return Err("Couldn't read this commit's author.".into());
+        }
+        Ok(CommitPeople {
+            author: f[0].to_string(),
+            author_email: f[1].to_string(),
+            author_time: f[2].trim().parse().unwrap_or(0),
+            committer: f[3].to_string(),
+            committer_email: f[4].to_string(),
+            committer_time: f[5].trim().parse().unwrap_or(0),
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn get_commit_files(path: String, hash: String) -> CmdResult<Vec<FileChange>> {
     blocking(move || {
@@ -650,6 +687,15 @@ pub struct RemoteError {
     host: Option<String>,
     /// The remote's name, e.g. "origin".
     remote: Option<String>,
+    /// How the remote is reached: "https" (credentials can be stored from
+    /// Orbe) or "ssh" (keys), when known.
+    transport: Option<&'static str>,
+}
+
+impl RemoteError {
+    fn other(message: impl Into<String>) -> Self {
+        RemoteError { kind: "other", message: message.into(), url: None, host: None, remote: None, transport: None }
+    }
 }
 
 fn has_any(text: &str, needles: &[&str]) -> bool {
@@ -754,14 +800,25 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty() && !host.contains(' ')).then(|| host.to_string())
 }
 
+/// "https" or "ssh" for a remote URL.
+fn transport_of(url: &str) -> Option<&'static str> {
+    let l = url.trim().to_ascii_lowercase();
+    if l.starts_with("https://") || l.starts_with("http://") {
+        Some("https")
+    } else if l.starts_with("ssh://") || (l.contains('@') && l.contains(':') && !l.contains("://")) {
+        Some("ssh")
+    } else {
+        None
+    }
+}
+
 fn remote_error(repo: &str, message: String) -> RemoteError {
     let (kind, url) = classify_remote_error(&message);
     let remote = remote_name(repo);
-    let host = remote
-        .as_deref()
-        .and_then(|r| run_git(repo, &["remote", "get-url", r]).ok())
-        .and_then(|u| host_of(u.trim()));
-    RemoteError { kind, message, url, host, remote }
+    let remote_url = remote.as_deref().and_then(|r| run_git(repo, &["remote", "get-url", r]).ok());
+    let host = remote_url.as_deref().and_then(|u| host_of(u.trim()));
+    let transport = remote_url.as_deref().and_then(transport_of);
+    RemoteError { kind, message, url, host, remote, transport }
 }
 
 /// Run a git command that talks to a remote, turning failures into a `RemoteError`.
@@ -773,14 +830,14 @@ fn run_remote(repo: &str, args: &[&str]) -> Result<String, RemoteError> {
 pub async fn fetch(path: String) -> Result<(), RemoteError> {
     tauri::async_runtime::spawn_blocking(move || run_remote(&path, &["fetch", "--all", "--prune"]).map(|_| ()))
         .await
-        .map_err(|e| RemoteError { kind: "other", message: e.to_string(), url: None, host: None, remote: None })?
+        .map_err(|e| RemoteError::other(e.to_string()))?
 }
 
 #[tauri::command]
 pub async fn pull(path: String) -> Result<(), RemoteError> {
     tauri::async_runtime::spawn_blocking(move || run_remote(&path, &["pull"]).map(|_| ()))
         .await
-        .map_err(|e| RemoteError { kind: "other", message: e.to_string(), url: None, host: None, remote: None })?
+        .map_err(|e| RemoteError::other(e.to_string()))?
 }
 
 #[tauri::command]
@@ -790,13 +847,7 @@ pub async fn push(path: String) -> Result<(), RemoteError> {
         if has_upstream {
             run_remote(&path, &["push"])?;
         } else {
-            let remote = remote_name(&path).ok_or_else(|| RemoteError {
-                kind: "other",
-                message: "This repository has no remote to push to.".into(),
-                url: None,
-                host: None,
-                remote: None,
-            })?;
+            let remote = remote_name(&path).ok_or_else(|| RemoteError::other("This repository has no remote to push to."))?;
             run_remote(&path, &["push", "-u", &remote, "HEAD"])?;
         }
         // Don't trust the exit code alone: make sure the commits really are on the remote.
@@ -815,7 +866,7 @@ pub async fn push(path: String) -> Result<(), RemoteError> {
         Ok(())
     })
     .await
-    .map_err(|e| RemoteError { kind: "other", message: e.to_string(), url: None, host: None, remote: None })?
+    .map_err(|e| RemoteError::other(e.to_string()))?
 }
 
 // ---------------------------------------------------------------------------
@@ -1520,13 +1571,176 @@ pub async fn open_author_site() -> CmdResult<()> {
 /// used to launch programs or open local files.
 #[tauri::command]
 pub async fn open_url(url: String) -> CmdResult<()> {
-    let ok = (url.starts_with("https://") || url.starts_with("http://"))
-        && url.len() < 2048
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\' || c == '`');
-    if !ok {
+    if !is_web_link(&url) {
         return Err("That doesn't look like a web link.".into());
     }
     blocking(move || open_in_browser(&url)).await
+}
+
+fn is_web_link(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://"))
+        && url.len() < 2048
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\' || c == '`')
+}
+
+// ---------------------------------------------------------------------------
+// In-app sign-in
+// ---------------------------------------------------------------------------
+
+/// Label of the in-app sign-in window.
+const AUTH_WINDOW: &str = "auth";
+
+/// What happens in the sign-in window, sent to the main window as "auth-window".
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AuthWindowEvent {
+    /// "loaded" (a page finished loading) or "closed".
+    event: &'static str,
+    url: Option<String>,
+}
+
+/// Open a sign-in or authorization page (SSO, the remote's login, token
+/// settings) in a window inside Orbe, so you never have to leave the app.
+/// The page is remote content: it has no access to Orbe's commands (the
+/// capabilities only cover the main window). Its cookies persist, so you stay
+/// signed in to the host next time.
+#[tauri::command]
+pub async fn open_auth_window(app: tauri::AppHandle, url: String, title: Option<String>) -> CmdResult<()> {
+    use tauri::{Emitter, Manager};
+    if !is_web_link(&url) {
+        return Err("That doesn't look like a web link.".into());
+    }
+    let parsed: tauri::Url = url.parse().map_err(|_| "That doesn't look like a web link.".to_string())?;
+    let title = title.unwrap_or_else(|| "Sign in".into());
+
+    if let Some(w) = app.get_webview_window(AUTH_WINDOW) {
+        w.navigate(parsed).map_err(|e| e.to_string())?;
+        let _ = w.set_title(&title);
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    let loaded = app.clone();
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, AUTH_WINDOW, tauri::WebviewUrl::External(parsed))
+        .title(title)
+        .inner_size(560.0, 760.0)
+        .min_inner_size(420.0, 520.0)
+        .center()
+        .focused(true)
+        .on_page_load(move |_webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = loaded.emit_to(
+                    "main",
+                    "auth-window",
+                    AuthWindowEvent { event: "loaded", url: Some(payload.url().to_string()) },
+                );
+            }
+        });
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder.parent(&main).map_err(|e| e.to_string())?;
+    }
+    let window = builder.build().map_err(|e| format!("Couldn't open the sign-in window ({e})."))?;
+
+    let closed = app.clone();
+    window.on_window_event(move |e| {
+        if matches!(e, tauri::WindowEvent::Destroyed) {
+            let _ = closed.emit_to("main", "auth-window", AuthWindowEvent { event: "closed", url: None });
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_auth_window(app: tauri::AppHandle) -> CmdResult<()> {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window(AUTH_WINDOW) {
+        w.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Bring the sign-in window to the front, if it's open. Returns whether it is.
+#[tauri::command]
+pub async fn focus_auth_window(app: tauri::AppHandle) -> CmdResult<bool> {
+    use tauri::Manager;
+    Ok(match app.get_webview_window(AUTH_WINDOW) {
+        Some(w) => {
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+            true
+        }
+        None => false,
+    })
+}
+
+/// Cheap "can I talk to the remote now?" check, used while you sign in to
+/// know when it worked: reads the remote's HEAD without fetching anything.
+#[tauri::command]
+pub async fn check_remote_access(path: String) -> Result<(), RemoteError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let remote = remote_name(&path).ok_or_else(|| RemoteError::other("This repository has no remote."))?;
+        run_remote(&path, &["ls-remote", &remote, "HEAD"]).map(|_| ())
+    })
+    .await
+    .map_err(|e| RemoteError::other(e.to_string()))?
+}
+
+/// Save a username and password/token for the repository's HTTPS remote in
+/// the computer's Git credential helper (Git Credential Manager, the macOS
+/// keychain…), exactly as if Git had asked for them in a terminal. Orbe never
+/// keeps the secret itself.
+#[tauri::command]
+pub async fn store_credential(path: String, username: String, secret: String) -> CmdResult<()> {
+    blocking(move || {
+        let username = username.trim();
+        let secret = secret.trim();
+        if username.is_empty() || secret.is_empty() {
+            return Err("Enter both your username and your password or token.".into());
+        }
+        if [username, secret].iter().any(|v| v.contains(['\n', '\r', '\0'])) {
+            return Err("The username or token contains characters Git can't store.".into());
+        }
+        let remote = remote_name(&path).ok_or_else(|| "This repository has no remote.".to_string())?;
+        let url = run_git(&path, &["remote", "get-url", &remote])?;
+        let url = url.trim();
+        if transport_of(url) != Some("https") {
+            return Err("This remote uses SSH, which signs in with keys rather than a password.".into());
+        }
+        let protocol = if url.to_ascii_lowercase().starts_with("http://") { "http" } else { "https" };
+        // Host with port, without any "user@" part.
+        let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+        let authority = rest.split('/').next().unwrap_or_default();
+        let host = authority.rsplit('@').next().unwrap_or_default();
+        if host.is_empty() {
+            return Err("Couldn't read the remote's address.".into());
+        }
+
+        let helpers = run_git_allow(&path, &["config", "--get-all", "credential.helper"], &[0, 1])?;
+        if helpers.trim().is_empty() {
+            return Err(
+                "Git has no credential helper set up on this computer, so there's nowhere safe to keep the token. Install Git Credential Manager (it comes with Git for Windows) and try again."
+                    .into(),
+            );
+        }
+
+        let input = format!("protocol={protocol}\nhost={host}\nusername={username}\npassword={secret}\n\n");
+        let mut cmd = git_command(&path);
+        cmd.args(["credential", "approve"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| format!("Could not run git ({e})."))?;
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().ok_or("Could not talk to git.")?;
+            stdin.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() { "Git couldn't save the credentials.".into() } else { err });
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]

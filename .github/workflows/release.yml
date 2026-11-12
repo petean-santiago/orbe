@@ -1,0 +1,71 @@
+name: Release
+
+# Push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to build
+# Orbe for macOS (Apple Silicon), Windows and Linux and attach the installers
+# to a draft GitHub release. Review it, publish it, then copy the files into
+# orbe-landing/public/downloads/<version>/ (see orbe-landing/README.md).
+#
+# Optional repository variable ORBE_UPDATES_URL: where installed copies look
+# for new versions (defaults to https://orbe.santiago-petean.com/latest.json).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14 # Apple Silicon
+            args: --target aarch64-apple-darwin
+          - platform: ubuntu-22.04
+            args: --bundles appimage,deb
+          - platform: windows-latest
+            args: --bundles nsis
+    runs-on: ${{ matrix.platform }}
+    env:
+      ORBE_UPDATES_URL: ${{ vars.ORBE_UPDATES_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev pkg-config
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Orbe v__VERSION__
+          releaseBody: See what's new on the Orbe website.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

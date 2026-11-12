@@ -17,6 +17,7 @@ import {
 } from "./api";
 import { layoutGraph, type GraphLayout } from "./graph";
 import { computeSync } from "./sync";
+import type { AiOutcome } from "./conflictAi";
 
 export type View = "history" | "changes" | "files";
 
@@ -178,6 +179,14 @@ export class RepoTab {
 
   /** A merge/rebase stopped half-way (usually for conflicts), or null. */
   operation = $state<RepoOperation | null>(null);
+  /**
+   * "Resolve all with AI" results waiting to be shown, by file path. Each
+   * file's conflict view applies them when it opens (if the file hasn't
+   * changed since), so they're reviewed before anything is saved.
+   */
+  aiConflictSuggestions = $state<Record<string, { text: string; outcomes: [number, AiOutcome][]; rev: number }>>({});
+  /** Progress of a running "Resolve all with AI". */
+  aiResolving = $state<{ done: number; total: number } | null>(null);
 
   /** Branch being switched to, for instant feedback while git works. */
   pendingCheckout = $state<string | null>(null);
@@ -324,6 +333,11 @@ export class RepoTab {
       const headName = head?.name ?? (branches.length ? null : this.repo.head);
       if (this.repo.head !== headName) this.repo = { ...this.repo, head: headName };
       if (this.treeLoaded) void this.loadTree();
+      // AI suggestions only matter for files that are still conflicted.
+      const stillConflicted = new Set(status.filter((s) => s.status === "conflicted").map((s) => s.path));
+      if (Object.keys(this.aiConflictSuggestions).some((p) => !stillConflicted.has(p))) {
+        this.aiConflictSuggestions = Object.fromEntries(Object.entries(this.aiConflictSuggestions).filter(([p]) => stillConflicted.has(p)));
+      }
       if (this.selectedChange) {
         const sel = this.selectedChange;
         this.selectedChange =
@@ -543,6 +557,21 @@ export class RepoTab {
       `Resolved ${baseName(file)}`,
     );
     if (ok) this.afterResolve(file);
+    return ok;
+  }
+
+  /** Save several resolved files at once and stage them ("Apply AI to all"). */
+  async saveResolutions(files: { path: string; content: string }[]) {
+    if (!files.length) return false;
+    const ok = await this.mutate(
+      async (p) => {
+        for (const f of files) await git.writeFile(p, f.path, f.content);
+        await git.stage(p, files.map((f) => f.path));
+      },
+      "Couldn't save the resolutions",
+      `Resolved ${files.length} file${files.length === 1 ? "" : "s"}`,
+    );
+    if (ok) this.afterResolve(files[files.length - 1].path);
     return ok;
   }
 

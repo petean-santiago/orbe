@@ -1,6 +1,7 @@
 mod ai;
 mod git;
 mod store;
+mod updates;
 
 use tauri::Manager;
 
@@ -26,6 +27,7 @@ pub fn run() {
             git::get_log,
             git::get_branches,
             git::get_file_diff,
+            git::get_commit_people,
             git::get_commit_files,
             git::get_commit_file_diff,
             git::stage_files,
@@ -52,6 +54,13 @@ pub fn run() {
             git::write_file,
             git::open_author_site,
             git::open_url,
+            updates::app_version,
+            updates::check_for_update,
+            git::open_auth_window,
+            git::close_auth_window,
+            git::focus_auth_window,
+            git::check_remote_access,
+            git::store_credential,
             git::create_tag,
             git::delete_tag,
             git::stash_save,

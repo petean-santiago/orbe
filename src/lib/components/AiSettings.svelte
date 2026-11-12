@@ -2,6 +2,7 @@
   import {
     Check,
     CircleAlert,
+    GitMerge,
     CircleCheck,
     KeyRound,
     LoaderCircle,
@@ -13,7 +14,7 @@
     Zap,
   } from "@lucide/svelte";
   import { ai, type AiProvider } from "../api";
-  import { settings, AI_PROVIDERS } from "../settings.svelte";
+  import { settings, AI_PROVIDERS, CONFLICT_STRATEGIES, type ConflictStrategy } from "../settings.svelte";
 
   const s = $derived(settings.value.ai);
   const provider = $derived(s.provider);
@@ -291,8 +292,46 @@
       {/if}
     </div>
 
+    <section class="border-t border-line-soft pt-5">
+      <div class="flex items-center gap-2 text-[13px] font-medium text-fg"><GitMerge size={15} class="text-accent" /> Conflict resolution</div>
+      <p class="mt-1 text-[12px] leading-relaxed text-fg-faint">
+        How <span class="text-fg-muted">Resolve with AI</span> decides when both branches changed the same lines. You always review the result before it's saved.
+      </p>
+      <div class="mt-3 grid grid-cols-2 gap-2">
+        {#each Object.entries(CONFLICT_STRATEGIES) as [id, st] (id)}
+          {@const active = settings.value.ai.conflicts.strategy === id}
+          <button
+            class={[
+              "relative flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-all",
+              active ? "border-accent/60 bg-accent-soft" : "border-line-soft bg-surface-1 hover:border-line hover:bg-surface-2",
+            ]}
+            onclick={() => (settings.value.ai.conflicts.strategy = id as ConflictStrategy)}
+          >
+            {#if active}
+              <span class="absolute top-2.5 right-2.5 flex size-4.5 items-center justify-center rounded-full bg-accent-strong">
+                <Check size={11} strokeWidth={3} class="text-white" />
+              </span>
+            {/if}
+            <span class="text-[13px] font-medium text-fg">{st.label}</span>
+            <span class="pr-4 text-[11.5px] leading-snug text-fg-faint">{st.description}</span>
+          </button>
+        {/each}
+      </div>
+      <div class="mt-4 mb-1.5 text-[13px] font-medium text-fg">Your own rules <span class="font-normal text-fg-faint">(optional)</span></div>
+      <div class="glass-well rounded-lg focus-within:border-accent/60">
+        <textarea
+          bind:value={settings.value.ai.conflicts.instructions}
+          rows="3"
+          spellcheck="false"
+          placeholder={"e.g. In package.json keep the higher version.\nNever drop translations; keep both.\nFor CSS colors prefer the incoming branch."}
+          class="block w-full resize-y bg-transparent px-3 py-2 text-[12.5px] leading-relaxed text-fg outline-none placeholder:text-fg-faint"
+        ></textarea>
+      </div>
+      <p class="mt-1.5 text-[12px] text-fg-faint">Written in plain language; they take priority over the criterion above.</p>
+    </section>
+
     <p class="text-[12px] leading-relaxed text-fg-faint">
-      Orbe only contacts the provider when you ask it to (generate a message, explain, chat). It sends the relevant
+      Orbe only contacts the provider when you ask it to (generate a message, explain, chat, resolve conflicts). It sends the relevant
       diffs, file names and recent commit messages, nothing else.
     </p>
   </div>
