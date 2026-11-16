@@ -22,10 +22,10 @@ single sign-on help. Use them in the comments, in the Featured section or wherev
 
 ```bash
 npm i playwright-core   # once, anywhere
-node source/render.cjs "$PWD/source/posts.html" "$PWD/posts"
+CHROME_PATH=/path/to/chrome node source/render.cjs "$PWD/source/posts.html" "$PWD/posts"
 ```
 
-`render.cjs` uses Playwright's Chromium, so set its `executablePath` to a Chrome or Chromium on your machine.
+`render.cjs` uses Playwright's Chromium, so set the `CHROME_PATH` env var to a Chrome or Chromium on your machine.
 
 ## Post copy (draft)
 
@@ -42,7 +42,7 @@ node source/render.cjs "$PWD/source/posts.html" "$PWD/posts"
 >
 > It runs on macOS, Windows and Linux, built with Tauri, Rust and Svelte.
 >
-> Download it at orbe.santiago-petean.com. I'd love to hear what you think, and what would make it your
+> It's free and open source (MIT): download it at orbe-git.app or read the code at github.com/petean-santiago/orbe. I'd love to hear what you think, and what would make it your
 > everyday Git client.
 >
 > #git #developertools #rust #svelte #tauri

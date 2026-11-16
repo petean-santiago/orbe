@@ -3,7 +3,9 @@ name = "orbe"
 version = "0.2.0"
 description = "Orbe — a beautiful Git client"
 authors = ["Santiago Petean (https://www.santiago-petean.com/)"]
-homepage = "https://www.santiago-petean.com/"
+homepage = "https://orbe-git.app"
+repository = "https://github.com/petean-santiago/orbe"
+license = "MIT"
 edition = "2021"
 rust-version = "1.77"
 

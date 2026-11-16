@@ -12,7 +12,7 @@ use std::time::Duration;
 /// redirecting: redirects are followed).
 const LATEST_URL: &str = match option_env!("ORBE_UPDATES_URL") {
     Some(url) if !url.is_empty() => url,
-    _ => "https://orbe.santiago-petean.com/latest.json",
+    _ => "https://orbe-git.app/latest.json",
 };
 
 #[derive(Serialize, Deserialize, Clone)]

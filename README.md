@@ -4,6 +4,11 @@
 
 <h1 align="center">Orbe</h1>
 <p align="center">A calm, beautiful Git client for Windows, macOS (Apple Silicon) and Linux.</p>
+<p align="center">
+  <a href="https://orbe-git.app"><strong>orbe-git.app</strong></a> ·
+  <a href="https://github.com/petean-santiago/orbe/releases/latest">Download</a> ·
+  <a href="#license">MIT licensed</a>
+</p>
 <p align="center">Created by <a href="https://www.santiago-petean.com/"><strong>Santiago Petean</strong></a></p>
 
 ---
@@ -12,11 +17,38 @@ Orbe is a desktop Git client in the spirit of Fork, built with **Tauri 2 + Rust 
 Design matters as much as features: the look is dark fuchsia glassmorphism on a near-black base,
 with distinctive typography, and every user can rearrange the interface to suit them.
 
-**Status:** v0.1, early development. The core day-to-day workflow (open, browse history, stage,
-commit, branch, fetch/pull/push) works. See [Roadmap](#roadmap) for what's next.
+**Status:** early development (see [releases](https://github.com/petean-santiago/orbe/releases)). The core
+day-to-day workflow (open, browse history, stage, commit, branch, fetch/pull/push, resolve conflicts) works.
+See [Roadmap](#roadmap) for what's next.
+
+## Download
+
+Get the latest build from [orbe-git.app](https://orbe-git.app) or the
+[Releases page](https://github.com/petean-santiago/orbe/releases/latest):
+
+| Platform | File | Notes |
+| --- | --- | --- |
+| Windows 10/11 (64-bit) | `Orbe_<version>_x64-setup.exe` | If SmartScreen appears, choose **More info → Run anyway**. |
+| macOS (Apple Silicon) | `Orbe_<version>_aarch64.dmg` | See the macOS note below. |
+| Linux (x86_64) | `Orbe_<version>_amd64.AppImage` or `.deb` | Needs glibc 2.35+ and WebKitGTK 4.1. `chmod +x` the AppImage to run it. |
+
+You need **Git** installed and on your `PATH`: Orbe uses your own Git.
+
+**Builds are not code-signed yet.** Orbe is a free, open-source project and the certificates cost money, so the
+installers are unsigned for now. You can read every line of the code, check the SHA-256 shown next to each
+download, or [build it yourself](#quick-start). On macOS, if the app is reported as damaged, drag it to
+Applications and run this once:
+
+```bash
+xattr -cr /Applications/Orbe.app
+```
+
+Orbe checks [orbe-git.app/latest.json](https://orbe-git.app/latest.json) twice a day and shows an **Update** pill
+when a newer version exists. It never installs anything by itself and sends nothing about you.
 
 ## Contents
 
+- [Download](#download)
 - [Quick start](#quick-start)
 - [Features](#features)
 - [Architecture](#architecture)
@@ -25,7 +57,10 @@ commit, branch, fetch/pull/push) works. See [Roadmap](#roadmap) for what's next.
 - [Design system](#design-system)
 - [Conventions and gotchas](#conventions-and-gotchas)
 - [Checks and builds](#checks-and-builds)
+- [Releasing](#releasing)
 - [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
 - [Author](#author)
 
 ## Quick start
@@ -291,6 +326,20 @@ pnpm tauri build                   # output in src-tauri/target/release/bundle/
 CI (`.github/workflows/build.yml`) builds on macOS 14 (Apple Silicon), Ubuntu 22.04 and Windows,
 and uploads the bundles as artifacts. Release signing and notarization aren't set up yet.
 
+## Releasing
+
+1. `pnpm version:set X.Y.Z` updates the version in `package.json`, `src-tauri/tauri.conf.json` and
+   `src-tauri/Cargo.toml`. Run `cargo build` in `src-tauri` to refresh `Cargo.lock`, then commit.
+2. `git tag vX.Y.Z && git push origin main vX.Y.Z`. The *Release* workflow (`.github/workflows/release.yml`)
+   builds macOS, Windows and Linux and attaches the installers to a **draft** GitHub release. It refuses to run
+   if the tag doesn't match the app version. Review the draft and publish it.
+3. The website (the separate `orbe-landing` project) links to those installers.
+   Add the new entry to its `RELEASES` list (`pnpm release:info X.Y.Z` prints sizes and checksums) and deploy: the
+   download buttons, the changelog and `latest.json` (what installed copies read) all follow.
+
+Set the `ORBE_UPDATES_URL` repository variable to point builds at another `latest.json`; the default is
+`https://orbe-git.app/latest.json`. Installed copies keep the address they were built with, so keep that domain alive.
+
 ## Roadmap
 
 Rough priorities. Nothing here is committed to yet.
@@ -307,7 +356,17 @@ Rough priorities. Nothing here is committed to yet.
 - [ ] Side-by-side diff mode and syntax highlighting
 - [ ] `gix` for faster log and status on large repositories
 - [ ] Settings import/export; light theme
-- [ ] Code signing, notarization and auto-update
+- [ ] Code signing, notarization and auto-update (today: unsigned builds and an update notice)
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR, run the [checks](#checks-and-builds) and read
+[Conventions and gotchas](#conventions-and-gotchas). The browser preview (`pnpm dev`) is the fastest way to try UI
+changes. For a new Git operation, follow [Add a Git operation](#add-a-git-operation); keep `mock.ts` in sync.
+
+## License
+
+[MIT](LICENSE) © 2026 Santiago Petean. "Git" is a trademark of Software Freedom Conservancy; Orbe is not affiliated with it.
 
 ## Author
 

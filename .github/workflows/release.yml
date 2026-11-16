@@ -2,11 +2,12 @@ name: Release
 
 # Push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to build
 # Orbe for macOS (Apple Silicon), Windows and Linux and attach the installers
-# to a draft GitHub release. Review it, publish it, then copy the files into
-# orbe-landing/public/downloads/<version>/ (see orbe-landing/README.md).
+# to a draft GitHub release. Publish the draft and the website's download
+# buttons (which point at GitHub Releases) work; then add the release notes to
+# the landing (see orbe-landing/README.md). Bump versions with `pnpm version:set`.
 #
 # Optional repository variable ORBE_UPDATES_URL: where installed copies look
-# for new versions (defaults to https://orbe.santiago-petean.com/latest.json).
+# for new versions (defaults to https://orbe-git.app/latest.json).
 
 on:
   push:
@@ -59,13 +60,23 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          app=$(node -p "require('./package.json').version")
+          if [ "v$app" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} but the app version is $app. Run pnpm version:set." >&2
+            exit 1
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
           releaseName: Orbe v__VERSION__
-          releaseBody: See what's new on the Orbe website.
+          releaseBody: See what's new at https://orbe-git.app
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
