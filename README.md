@@ -29,18 +29,31 @@ Get the latest build from [orbe-git.app](https://orbe-git.app) or the
 | Platform | File | Notes |
 | --- | --- | --- |
 | Windows 10/11 (64-bit) | `Orbe_<version>_x64-setup.exe` | If SmartScreen appears, choose **More info → Run anyway**. |
-| macOS (Apple Silicon) | `Orbe_<version>_aarch64.dmg` | See the macOS note below. |
+| macOS (Apple Silicon) | `Orbe_<version>_aarch64.dmg` | See [Installing](#installing). |
 | Linux (x86_64) | `Orbe_<version>_amd64.AppImage` or `.deb` | Needs glibc 2.35+ and WebKitGTK 4.1. `chmod +x` the AppImage to run it. |
 
 You need **Git** installed and on your `PATH`: Orbe uses your own Git.
 
 **Builds are not code-signed yet.** Orbe is a free, open-source project and the certificates cost money, so the
 installers are unsigned for now. You can read every line of the code, check the SHA-256 shown next to each
-download, or [build it yourself](#quick-start). On macOS, if the app is reported as damaged, drag it to
-Applications and run this once:
+download, or [build it yourself](#quick-start).
+
+### Installing
+
+**macOS**: open the `.dmg` and drag Orbe to **Applications**. If macOS says the app is "damaged" or can't be
+opened (Gatekeeper blocks unsigned apps), run this once in Terminal and open Orbe again:
 
 ```bash
 xattr -cr /Applications/Orbe.app
+```
+
+**Windows**: run the installer. If SmartScreen appears, choose **More info → Run anyway**.
+
+**Linux**: for the AppImage, make it executable and run it; for Debian or Ubuntu install the `.deb`:
+
+```bash
+chmod +x Orbe_*.AppImage && ./Orbe_*.AppImage
+sudo apt install ./Orbe_*.deb
 ```
 
 Orbe checks [orbe-git.app/latest.json](https://orbe-git.app/latest.json) twice a day and shows an **Update** pill
